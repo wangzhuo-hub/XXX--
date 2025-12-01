@@ -3,6 +3,8 @@
 
 
 
+
+
 import React, { useState, useEffect } from 'react';
 import { LayoutDashboard, Building2, Users, PieChart, Settings, Bell, Search, Menu, Sparkles, UserCircle, Download, Upload, X, Check, Filter, Save, RotateCcw, Trash2, Calculator, Database, Lightbulb, Cloud, CloudCog, RefreshCw, AlertCircle, ExternalLink, Link, Info, Loader2, CheckCircle2, XCircle, History, FileClock, ChevronRight, ChevronDown, CloudUpload, LogOut, User, Calendar, ChevronLeft } from 'lucide-react';
 import { generateInitialData } from './services/mockData';
@@ -469,6 +471,32 @@ const App: React.FC = () => {
       }
   };
 
+  const handleRestoreCloudBackup = async (backupId: string) => {
+      if (!window.confirm("⚠️ 警告：覆盖操作\n\n确定要将此历史备份恢复到当前系统吗？\n当前本地的所有数据将被此备份完全覆盖且无法撤销。\n\n恢复后页面将自动刷新。")) {
+          return;
+      }
+
+      setRestoringId(backupId);
+      await new Promise(resolve => setTimeout(resolve, 500));
+
+      try {
+          const res = await fetchCloudBackup(cloudConfig, backupId);
+          if (res.success && res.data) {
+              const safeData = { ...generateInitialData(), ...res.data };
+              localStorage.setItem(STORAGE_KEY, JSON.stringify(safeData));
+              alert("✅ 恢复成功！系统正在刷新...");
+              window.location.reload();
+          } else {
+              alert("恢复失败: " + res.message);
+          }
+      } catch (e) {
+          console.error("Restore failed", e);
+          alert("恢复过程中发生未知错误");
+      } finally {
+          setRestoringId(null);
+      }
+  };
+
   const calculateTrends = (
       tenants: Tenant[], 
       payments: PaymentRecord[], 
@@ -827,9 +855,29 @@ const App: React.FC = () => {
 
       years.forEach((y, idx) => {
           const targets = data.yearlyTargets?.[y] || { revenue: 0, occupancy: 0 };
-          const actualRevenue = data.payments
-              .filter(p => p.date.startsWith(y.toString()) && (p.type === 'Rent' || p.type === 'DepositToRent' || p.type === 'ParkingFee'))
-              .reduce((sum, p) => sum + p.amount, 0);
+          
+          // Future Year Logic: Only show if it's November or December, AND use Budget Target as Actual
+          const now = new Date();
+          const currentRealYear = now.getFullYear();
+          const currentRealMonth = now.getMonth() + 1; // 1-12
+          
+          if (y > currentRealYear) {
+              if (currentRealMonth < 11) return; // Hide future year if before November
+          }
+
+          let actualRevenue = 0;
+          let revenueYoY = null;
+          let occupancyYoY = null;
+
+          // If it's a future year (that we decided to show), use Target as Actual for projection
+          if (y > currentRealYear) {
+              actualRevenue = targets.revenue; // Use Budget as Projected Actual
+          } else {
+              // Real actuals for past/current years
+              actualRevenue = data.payments
+                  .filter(p => p.date.startsWith(y.toString()) && (p.type === 'Rent' || p.type === 'DepositToRent' || p.type === 'ParkingFee'))
+                  .reduce((sum, p) => sum + p.amount, 0);
+          }
           
           // Calculate End of Year Occupancy Snapshot
           const yearEnd = new Date(y, 11, 31);
@@ -849,14 +897,32 @@ const App: React.FC = () => {
           const occupancyRate = totalLeasable > 0 ? parseFloat(((leasedArea / totalLeasable) * 100).toFixed(1)) : 0;
 
           // YoY Logic
-          let revenueYoY = null;
-          let occupancyYoY = null;
-          
           if (idx > 0) {
               const prev = results[idx - 1];
-              if (prev && prev.revenueActual > 0) {
+              
+              // Revenue YoY:
+              // If Current Year: Calculate YTD (Year-To-Date)
+              if (y === currentRealYear && prev) {
+                  // Calculate Prev Year YTD
+                  const prevYearPrefix = `${y-1}`;
+                  // We need to calculate prev year revenue ONLY up to current month
+                  const prevYearYTDRevenue = data.payments
+                      .filter(p => {
+                          if (!p.date.startsWith(prevYearPrefix)) return false;
+                          const month = parseInt(p.date.split('-')[1]);
+                          return month <= currentRealMonth && (p.type === 'Rent' || p.type === 'DepositToRent' || p.type === 'ParkingFee');
+                      })
+                      .reduce((sum, p) => sum + p.amount, 0);
+                  
+                  if (prevYearYTDRevenue > 0) {
+                      revenueYoY = ((actualRevenue - prevYearYTDRevenue) / prevYearYTDRevenue) * 100;
+                  }
+              } 
+              // If Future Year (using target) or Past Year (using full actuals)
+              else if (prev && prev.revenueActual > 0) {
                   revenueYoY = ((actualRevenue - prev.revenueActual) / prev.revenueActual) * 100;
               }
+
               if (prev) {
                   occupancyYoY = occupancyRate - prev.occupancyRate;
               }
@@ -1166,9 +1232,14 @@ const App: React.FC = () => {
                                                      <div className="text-sm font-medium text-slate-700">{backup.note || '无备注'}</div>
                                                      <div className="text-xs text-slate-400 flex items-center gap-1"><FileClock size={10} /> {new Date(backup.created_at).toLocaleString()}</div>
                                                  </div>
-                                                 <button onClick={() => handleDownloadCloudBackup(backup.id, backup.note)} disabled={restoringId === backup.id} className="text-xs border border-slate-200 bg-white text-slate-600 px-2 py-1 rounded hover:border-blue-300 hover:text-blue-600 flex items-center gap-1">
-                                                     {restoringId === backup.id ? <Loader2 size={12} className="animate-spin"/> : <Download size={12}/>} 下载
-                                                 </button>
+                                                 <div className="flex gap-2">
+                                                     <button onClick={() => handleDownloadCloudBackup(backup.id, backup.note)} disabled={restoringId === backup.id} className="text-xs border border-slate-200 bg-white text-slate-600 px-2 py-1 rounded hover:border-blue-300 hover:text-blue-600 flex items-center gap-1 transition-colors">
+                                                         {restoringId === backup.id ? <Loader2 size={12} className="animate-spin"/> : <Download size={12}/>} 下载
+                                                     </button>
+                                                     <button onClick={() => handleRestoreCloudBackup(backup.id)} disabled={restoringId !== null} className="text-xs border border-orange-200 bg-orange-50 text-orange-700 px-2 py-1 rounded hover:bg-orange-100 hover:border-orange-300 flex items-center gap-1 transition-colors">
+                                                         {restoringId === backup.id ? <Loader2 size={12} className="animate-spin"/> : <RotateCcw size={12}/>} 恢复
+                                                     </button>
+                                                 </div>
                                              </div>
                                          ))}
                                      </div>
