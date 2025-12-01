@@ -1,6 +1,7 @@
+
 import React, { useState, useMemo, useEffect } from 'react';
 import { Building, Tenant, BudgetAssumption, ContractStatus, UnitStatus, BudgetAdjustment, BudgetAnalysisData, PaymentRecord, BudgetScenario } from '../types';
-import { Calculator, Calendar, DollarSign, TrendingUp, Save, Table, LayoutList, ChevronRight, ChevronDown, Download, ShieldAlert, ArrowRight, Maximize2, Minimize2, LineChart as LineChartIcon, Lightbulb, Edit3, X, Sparkles, PieChart, Activity, RotateCcw, TrendingDown, ArrowUpRight, ArrowDownRight, ArrowLeftRight, History, FileText, Info, FileWarning, Layers, Building as BuildingIcon, CheckCircle2, Copy, CloudUpload, Play, Trash2, Plus, Check } from 'lucide-react';
+import { Calculator, Calendar, DollarSign, TrendingUp, Save, Table, LayoutList, ChevronRight, ChevronDown, Download, ShieldAlert, ArrowRight, Maximize2, Minimize2, LineChart as LineChartIcon, Lightbulb, Edit3, X, Sparkles, PieChart, Activity, RotateCcw, TrendingDown, ArrowUpRight, ArrowDownRight, ArrowLeftRight, History, FileText, Info, FileWarning, Layers, Building as BuildingIcon, CheckCircle2, Copy, CloudUpload, Play, Trash2, Plus, Check, FileSpreadsheet } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } from 'recharts';
 import { analyzeBudget } from '../services/geminiService';
 
@@ -240,8 +241,8 @@ const BudgetImpactSummary: React.FC<{
                 </div>
             </div>
         </div>
-      </div>
-
+    );
+};
 
 export const BudgetManager: React.FC<BudgetManagerProps> = ({ 
     buildings: propBuildings, 
@@ -662,6 +663,77 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
       return map;
   }, [payments, detailYear]);
 
+  const handleExportExcel = () => {
+      let tableContent = `
+        <table border="1">
+          <thead>
+            <tr style="background-color: #f3f4f6; font-weight: bold;">
+              <th>客户名称</th>
+              <th>房号</th>
+              <th>分类</th>
+              <th>面积(㎡)</th>
+              <th>单价</th>
+              <th>1月</th><th>2月</th><th>3月</th><th>4月</th><th>5月</th><th>6月</th>
+              <th>7月</th><th>8月</th><th>9月</th><th>10月</th><th>11月</th><th>12月</th>
+              <th>合计</th>
+            </tr>
+          </thead>
+          <tbody>
+      `;
+
+      monthlyRows.forEach(row => {
+          const rowTotal = row.monthlyValues.reduce((a: number, b: any) => a + b.amount, 0);
+          tableContent += `
+            <tr>
+              <td>${row.name}</td>
+              <td>${row.unitNames}</td>
+              <td>${row.category}</td>
+              <td>${row.area}</td>
+              <td>${row.unitPrice}</td>
+              ${row.monthlyValues.map((v: any) => `<td>${v.amount || 0}</td>`).join('')}
+              <td>${rowTotal}</td>
+            </tr>
+          `;
+      });
+
+      const totals = Array(12).fill(0);
+      monthlyRows.forEach(row => {
+          row.monthlyValues.forEach((v: any, i: number) => totals[i] += v.amount);
+      });
+      const grandTotal = totals.reduce((a, b) => a + b, 0);
+
+      tableContent += `
+            <tr style="font-weight: bold; background-color: #e5e7eb;">
+              <td colspan="5" style="text-align: right;">合计</td>
+              ${totals.map(t => `<td>${t}</td>`).join('')}
+              <td>${grandTotal}</td>
+            </tr>
+          </tbody>
+        </table>
+      `;
+
+      const fullHTML = `
+        <html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">
+        <head>
+          <meta http-equiv="content-type" content="application/vnd.ms-excel; charset=UTF-8">
+        </head>
+        <body>
+          ${tableContent}
+        </body>
+        </html>
+      `;
+
+      const blob = new Blob([fullHTML], { type: 'application/vnd.ms-excel' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `Budget_Detail_${detailYear}.xls`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+  };
+
   // Handle Gemini Analysis
   const runAnalysis = async (type: 'Occupancy' | 'Revenue' | 'Execution') => {
       if (type === 'Execution') setIsAnalyzingExecution(true);
@@ -750,6 +822,9 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
                      </div>
                  </div>
                  <div className="flex items-center gap-2">
+                     <button onClick={handleExportExcel} className="flex items-center gap-1 bg-green-50 text-green-600 px-3 py-1.5 rounded-lg text-xs font-medium hover:bg-green-100 border border-green-200">
+                         <FileSpreadsheet size={14}/> 导出 Excel
+                     </button>
                      <button onClick={() => setIsFullScreen(!isFullScreen)} className="p-2 text-slate-500 hover:bg-slate-200 rounded-lg" title={isFullScreen ? "退出全屏" : "全屏模式"}>
                          {isFullScreen ? <Minimize2 size={18}/> : <Maximize2 size={18}/>}
                      </button>
@@ -1026,10 +1101,7 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
              )}
          </div>
       </div>
->>>>>>> 6c0459ec472ddd1b6b375bab5c2cb2b6664b073c
   );
-};
-
 
   return (
     <div className={`space-y-6 ${isFullScreen ? 'fixed inset-0 z-50 bg-white p-6 flex flex-col h-screen overflow-auto' : ''}`}>
@@ -1106,7 +1178,6 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
 
                {/* Action Buttons */}
                <button 
-                  onClick={confirmCloudSave} // Using confirm directly for now as simple trigger, proper modal below
                   disabled={activeScenarioId === 'current' && !scenarios.find(s=>s.isActive)} // Always enable save
                   onClick={() => setShowCloudModal(true)}
                   className="flex items-center gap-1 px-3 py-1.5 bg-white border border-slate-300 text-slate-700 rounded-lg text-xs font-medium hover:bg-slate-50 shadow-sm"
@@ -1215,6 +1286,3 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
     </div>
   );
 };
-
-export { BudgetManager };
-export default BudgetManager;

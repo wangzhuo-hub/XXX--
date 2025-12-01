@@ -2,82 +2,12 @@
 
 
 import { GoogleGenAI } from "@google/genai";
-import { DashboardData, KeyMoment, BudgetAssumption, BudgetScenario, Building } from "../types";
+import { DashboardData, KeyMoment } from "../types";
 
-// Conditionally initialize Gemini Client
-let ai: GoogleGenAI | null = null;
-if (process.env.API_KEY) {
-  try {
-    ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-  } catch (error) {
-    console.warn("Failed to initialize Gemini AI client:", error);
-    ai = null;
-  }
-}
-
-// 预算分析函数，用于BudgetManager组件
-export const analyzeBudget = async (data: {
-  assumptions: BudgetAssumption[];
-  scenarios: BudgetScenario[];
-  buildings: Building[];
-  userQuery?: string;
-}): Promise<string> => {
-  // Check if AI client is available
-  if (!ai) {
-    // Return mock data when AI service is not available
-    return "AI分析服务当前不可用。这是模拟的预算分析结果：当前预算方案总体合理，但建议关注成本控制和收入预测的准确性。根据市场趋势，建议考虑调整部分租金预期以保持竞争力。";
-  }
-
-  try {
-    const model = 'gemini-2.5-flash';
-    
-    const context = `
-      你现在是上海金蝶软件园的资深财务分析师。
-      你正在分析园区的预算数据。
-      以下是预算假设数据：
-      ${JSON.stringify(data.assumptions)}
-      
-      以下是预算方案数据：
-      ${JSON.stringify(data.scenarios)}
-      
-      以下是建筑数据：
-      ${JSON.stringify(data.buildings)}
-      
-      请根据这些数据回答问题。如果是通用分析，请重点关注：
-      1. 预算方案的合理性和可行性
-      2. 收入预测的准确性和潜在风险
-      3. 成本控制的优化建议
-      4. 不同方案之间的对比分析
-      5. 提高预算执行效率的策略
-      
-      保持回答专业、简练，使用中文。
-    `;
-
-    const prompt = data.userQuery || "请对当前预算方案进行全面分析，提供专业建议和风险提示。";
-
-    const response = await ai.models.generateContent({
-      model: model,
-      contents: [
-        { role: 'user', parts: [{ text: context }] },
-        { role: 'user', parts: [{ text: prompt }] }
-      ],
-    });
-
-    const result = await response.response;
-    return result.text();
-  } catch (error) {
-    console.error("Error analyzing budget:", error);
-    return "预算分析过程中发生错误，请稍后再试。";
-  }
-}
+// Initialize Gemini Client
+const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
 export const analyzeDashboard = async (data: DashboardData, userQuery?: string): Promise<string> => {
-  // Check if AI client is available
-  if (!ai) {
-    // Return mock data when AI service is not available
-    return "AI分析服务当前不可用。这是模拟的分析结果：园区整体运营状况良好，出租率稳定在85%以上。建议关注即将到期的租户续约情况，并考虑对部分区域进行市场推广以提高知名度。";
-  }
-
   try {
     const model = 'gemini-2.5-flash';
     
@@ -112,24 +42,11 @@ export const analyzeDashboard = async (data: DashboardData, userQuery?: string):
     return response.text || "抱歉，暂时无法分析数据。";
   } catch (error) {
     console.error("Gemini Analysis Error:", error);
-    // Return mock data when AI service is not available
-    return "AI分析服务当前不可用。这是模拟的分析结果：园区整体运营状况良好，出租率稳定在85%以上。建议关注即将到期的租户续约情况，并考虑对部分区域进行市场推广以提高知名度。";
+    return "AI 分析服务当前不可用，请检查网络设置或 API Key。";
   }
 };
 
 export const analyzeBudget = async (data: any, type: 'Occupancy' | 'Revenue' | 'Execution'): Promise<string> => {
-    // Check if AI client is available
-    if (!ai) {
-        // Return mock data when AI service is not available
-        if (type === 'Execution') {
-            return "预算执行分析：整体达成率良好，Q1-Q3营收达成率为92%，略低于预期主要受个别大客户延期付款影响。建议加强应收账款管理，优化现金流预测模型。";
-        } else if (type === 'Occupancy') {
-            return "出租率分析：年度平均出租率为87.5%，较去年提升2.3个百分点。Q2新签入驻企业贡献显著，预计年末可达成89%目标。";
-        } else {
-            return "营收分析：年度营收预计达成率为94.2%，其中软件信息服务类企业贡献突出。建议针对低效空间制定专项招商计划。";
-        }
-    }
-
     try {
         const model = 'gemini-2.5-flash';
         let promptContext = "";
@@ -172,14 +89,7 @@ export const analyzeBudget = async (data: any, type: 'Occupancy' | 'Revenue' | '
         return response.text || "暂无分析建议。";
     } catch (error) {
         console.error("Budget Analysis Error:", error);
-        // Return mock data when AI service is not available
-        if (type === 'Execution') {
-            return "预算执行分析：整体达成率良好，Q1-Q3营收达成率为92%，略低于预期主要受个别大客户延期付款影响。建议加强应收账款管理，优化现金流预测模型。";
-        } else if (type === 'Occupancy') {
-            return "出租率分析：年度平均出租率为87.5%，较去年提升2.3个百分点。Q2新签入驻企业贡献显著，预计年末可达成89%目标。";
-        } else {
-            return "营收分析：年度营收预计达成率为94.2%，其中软件信息服务类企业贡献突出。建议针对低效空间制定专项招商计划。";
-        }
+        return "AI 分析服务暂时不可用。";
     }
 };
 
@@ -190,14 +100,6 @@ export interface TenantSearchResult {
 }
 
 export const searchTenantInsights = async (tenantName: string): Promise<TenantSearchResult> => {
-  // Check if AI client is available
-  if (!ai) {
-    // Return empty result when AI service is not available
-    return { moments: [] };
-  }
-
-  try {
-
   try {
     const model = 'gemini-2.5-flash';
     const prompt = `
@@ -224,7 +126,7 @@ export const searchTenantInsights = async (tenantName: string): Promise<TenantSe
         ]
       }
       
-      If no info is found, return { "moments": [] };
+      If no info is found, return empty fields.
     `;
 
     const response = await ai.models.generateContent({

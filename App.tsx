@@ -353,18 +353,15 @@ const App: React.FC = () => {
         if (parsedData) {
           const safeData = { ...generateInitialData(), ...parsedData };
           recalculateMetrics(safeData, currentYear, 'All');
-          setData(safeData);
           setLastSaved(new Date().toLocaleTimeString());
         } else {
           const initialData = generateInitialData();
           recalculateMetrics(initialData, currentYear, 'All');
-          setData(initialData);
         }
       } catch (e) {
         console.error("Failed to load local data", e);
         const initialData = generateInitialData();
         recalculateMetrics(initialData, currentYear, 'All');
-        setData(initialData);
       }
     };
 
