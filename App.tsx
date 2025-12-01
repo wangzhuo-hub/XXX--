@@ -5,6 +5,8 @@
 
 
 
+
+
 import React, { useState, useEffect } from 'react';
 import { LayoutDashboard, Building2, Users, PieChart, Settings, Bell, Search, Menu, Sparkles, UserCircle, Download, Upload, X, Check, Filter, Save, RotateCcw, Trash2, Calculator, Database, Lightbulb, Cloud, CloudCog, RefreshCw, AlertCircle, ExternalLink, Link, Info, Loader2, CheckCircle2, XCircle, History, FileClock, ChevronRight, ChevronDown, CloudUpload, LogOut, User, Calendar, ChevronLeft } from 'lucide-react';
 import { generateInitialData } from './services/mockData';
@@ -70,7 +72,11 @@ const generateBudgetedBills = (
 
     const existingAssumption = assumptions.find(a => a.targetId === tenant.id && a.targetType === 'Existing');
 
-    const regularCycleMonths = tenant.paymentCycle === 'Quarterly' ? 3 : tenant.paymentCycle === 'SemiAnnual' ? 6 : tenant.paymentCycle === 'Annual' ? 12 : 1;
+    // Use flexible months if available, otherwise fallback to enum mapping
+    const regularCycleMonths = tenant.paymentCycleMonths 
+        ? tenant.paymentCycleMonths 
+        : (tenant.paymentCycle === 'Quarterly' ? 3 : tenant.paymentCycle === 'SemiAnnual' ? 6 : tenant.paymentCycle === 'Annual' ? 12 : 1);
+        
     const firstCycleMonths = tenant.firstPaymentMonths && tenant.firstPaymentMonths > 0 ? tenant.firstPaymentMonths : regularCycleMonths;
 
     let currentBillDate = tenant.firstPaymentDate ? new Date(tenant.firstPaymentDate) : new Date(leaseStart);
@@ -856,7 +862,7 @@ const App: React.FC = () => {
       years.forEach((y, idx) => {
           const targets = data.yearlyTargets?.[y] || { revenue: 0, occupancy: 0 };
           
-          // Future Year Logic: Only show if it's November or December, AND use Budget Target as Actual
+          // Future Year Logic: Only show if it's November or December
           const now = new Date();
           const currentRealYear = now.getFullYear();
           const currentRealMonth = now.getMonth() + 1; // 1-12
@@ -869,15 +875,10 @@ const App: React.FC = () => {
           let revenueYoY = null;
           let occupancyYoY = null;
 
-          // If it's a future year (that we decided to show), use Target as Actual for projection
-          if (y > currentRealYear) {
-              actualRevenue = targets.revenue; // Use Budget as Projected Actual
-          } else {
-              // Real actuals for past/current years
-              actualRevenue = data.payments
-                  .filter(p => p.date.startsWith(y.toString()) && (p.type === 'Rent' || p.type === 'DepositToRent' || p.type === 'ParkingFee'))
-                  .reduce((sum, p) => sum + p.amount, 0);
-          }
+          // Real actuals for past/current/future years (Future will be 0)
+          actualRevenue = data.payments
+              .filter(p => p.date.startsWith(y.toString()) && (p.type === 'Rent' || p.type === 'DepositToRent' || p.type === 'ParkingFee'))
+              .reduce((sum, p) => sum + p.amount, 0);
           
           // Calculate End of Year Occupancy Snapshot
           const yearEnd = new Date(y, 11, 31);
@@ -918,7 +919,7 @@ const App: React.FC = () => {
                       revenueYoY = ((actualRevenue - prevYearYTDRevenue) / prevYearYTDRevenue) * 100;
                   }
               } 
-              // If Future Year (using target) or Past Year (using full actuals)
+              // Standard YoY for past years
               else if (prev && prev.revenueActual > 0) {
                   revenueYoY = ((actualRevenue - prev.revenueActual) / prev.revenueActual) * 100;
               }

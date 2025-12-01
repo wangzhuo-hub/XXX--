@@ -3,6 +3,10 @@
 
 
 
+
+
+
+
 import React, { useState, useEffect, useMemo } from 'react';
 import { Tenant, Building, ContractStatus, DepositStatus, RentFreePeriod, PaymentCycle, UnitStatus } from '../types';
 import { Search, Plus, FileText, Filter, XCircle, AlertTriangle, AlertCircle, Calendar, CheckSquare, Square, Car, Calculator, RotateCw, ShieldAlert, ChevronDown, ChevronRight, UserMinus, ChevronUp, History, Cake, Briefcase, BarChart3, TrendingDown, DollarSign, Edit2, X, Clock, Trash2, Users, Flag, User, Phone, Save, Link } from 'lucide-react';
@@ -46,19 +50,42 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
       }
   }, [currentTenant.leaseStart, isEditing]);
 
-  // Update firstPaymentMonths default when cycle changes
-  const handleCycleChange = (cycle: PaymentCycle) => {
-      let months = 3;
-      if (cycle === 'Monthly') months = 1;
-      if (cycle === 'SemiAnnual') months = 6;
-      if (cycle === 'Annual') months = 12;
-
-      setCurrentTenant(prev => ({
-          ...prev,
-          paymentCycle: cycle,
-          firstPaymentMonths: prev.firstPaymentMonths || months
-      }));
-  };
+  // Payment Preview Calculation
+  const paymentPreview = useMemo(() => {
+      if (!currentTenant.leaseStart || !currentTenant.paymentCycleMonths) return [];
+      
+      try {
+          const list = [];
+          let coverStart = new Date(currentTenant.leaseStart);
+          // Default first pay date to lease start if empty
+          let billDate = currentTenant.firstPaymentDate ? new Date(currentTenant.firstPaymentDate) : new Date(currentTenant.leaseStart);
+          
+          const regularMonths = Number(currentTenant.paymentCycleMonths);
+          const firstMonths = currentTenant.firstPaymentMonths ? Number(currentTenant.firstPaymentMonths) : regularMonths;
+          
+          // Generate max 6 items (enough to see a year+ trend)
+          for (let i = 0; i < 6; i++) {
+              const duration = i === 0 ? firstMonths : regularMonths;
+              
+              const coverEnd = new Date(coverStart);
+              coverEnd.setMonth(coverEnd.getMonth() + duration);
+              coverEnd.setDate(coverEnd.getDate() - 1);
+              
+              list.push({
+                  date: billDate.toISOString().split('T')[0],
+                  period: `${coverStart.toISOString().split('T')[0]} ~ ${coverEnd.toISOString().split('T')[0]}`
+              });
+              
+              // Setup next
+              coverStart = new Date(coverEnd);
+              coverStart.setDate(coverStart.getDate() + 1);
+              billDate = new Date(coverStart); // Next bill defaults to start of period
+          }
+          return list;
+      } catch (e) {
+          return [];
+      }
+  }, [currentTenant.leaseStart, currentTenant.paymentCycleMonths, currentTenant.firstPaymentMonths, currentTenant.firstPaymentDate]);
 
   const handleSave = () => {
     // Validation Logic
@@ -112,9 +139,10 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
       unitIds: currentTenant.unitIds || [],
       totalArea: currentTenant.totalArea || 0,
       specialRequirements: currentTenant.specialRequirements || '',
-      paymentCycle: currentTenant.paymentCycle || 'Quarterly', 
+      paymentCycle: 'Quarterly', // Legacy compatibility
+      paymentCycleMonths: currentTenant.paymentCycleMonths || 3, // Default to 3 if not set
       firstPaymentDate: currentTenant.firstPaymentDate || currentTenant.leaseStart, 
-      firstPaymentMonths: currentTenant.firstPaymentMonths || (currentTenant.paymentCycle === 'Monthly' ? 1 : 3), 
+      firstPaymentMonths: currentTenant.firstPaymentMonths || currentTenant.paymentCycleMonths || 3, 
       monthlyRent: currentTenant.monthlyRent || 0,
       unitPrice: currentTenant.unitPrice || 0,
       depositAmount: currentTenant.depositAmount || 0,
@@ -127,6 +155,7 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
       legalRepBirthday: currentTenant.legalRepBirthday,
       contactName: currentTenant.contactName,
       contactBirthday: currentTenant.contactBirthday,
+      industry: currentTenant.industry, // Save industry
       parkingSpaces: undefined
     } as Tenant;
 
@@ -165,12 +194,22 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
     const derivedPrice = tenant.unitPrice || (tenant.totalArea ? Number((tenant.monthlyRent / tenant.totalArea * 12 / 365).toFixed(2)) : 0);
     const contractP = tenant.contractParkingSpaces !== undefined ? tenant.contractParkingSpaces : (tenant.parkingSpaces || 0);
     const actualP = tenant.actualParkingSpaces !== undefined ? tenant.actualParkingSpaces : (tenant.parkingSpaces || 0);
+    
+    // Convert legacy paymentCycle to months if paymentCycleMonths is missing
+    let months = tenant.paymentCycleMonths;
+    if (!months) {
+        if (tenant.paymentCycle === 'Monthly') months = 1;
+        else if (tenant.paymentCycle === 'SemiAnnual') months = 6;
+        else if (tenant.paymentCycle === 'Annual') months = 12;
+        else months = 3; // Default Quarterly
+    }
 
     setCurrentTenant({ 
         ...tenant, 
         unitPrice: derivedPrice,
         contractParkingSpaces: contractP,
-        actualParkingSpaces: actualP
+        actualParkingSpaces: actualP,
+        paymentCycleMonths: months
     });
     setRenewingFromId(null);
     setFormErrors({});
@@ -211,6 +250,8 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
           legalRepBirthday: tenant.legalRepBirthday,
           contactName: tenant.contactName,
           contactBirthday: tenant.contactBirthday,
+          industry: tenant.industry,
+          paymentCycleMonths: tenant.paymentCycleMonths || (tenant.paymentCycle === 'Monthly' ? 1 : tenant.paymentCycle === 'SemiAnnual' ? 6 : tenant.paymentCycle === 'Annual' ? 12 : 3)
       });
       
       setRenewingFromId(tenant.id); // Track we are renewing FROM this ID
@@ -529,15 +570,48 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                             <label className="block text-sm font-medium text-slate-700 mb-1">月租金 (元)</label>
                             <input type="number" className="w-full border border-slate-300 p-2.5 rounded-lg bg-slate-50 text-slate-500" value={currentTenant.monthlyRent || ''} readOnly />
                         </div>
+                        
+                        {/* Flexible Payment Cycle Input */}
                         <div>
-                            <label className="block text-sm font-medium text-slate-700 mb-1">支付周期</label>
-                            <select className="w-full border border-slate-300 p-2.5 rounded-lg" value={currentTenant.paymentCycle || 'Quarterly'} onChange={e => handleCycleChange(e.target.value as any)}>
-                                <option value="Monthly">押一付一</option>
-                                <option value="Quarterly">押一付三</option>
-                                <option value="SemiAnnual">半年付</option>
-                                <option value="Annual">年付</option>
-                            </select>
+                            <label className="block text-sm font-medium text-slate-700 mb-1">支付频率</label>
+                            <div className="flex items-center gap-2">
+                                <input 
+                                    type="number" 
+                                    className="w-full border border-slate-300 p-2.5 rounded-lg font-medium text-blue-700" 
+                                    value={currentTenant.paymentCycleMonths || ''} 
+                                    onChange={e => {
+                                        const val = Number(e.target.value);
+                                        // Auto update first payment months if it was default
+                                        const updateFirst = !currentTenant.firstPaymentMonths || currentTenant.firstPaymentMonths === currentTenant.paymentCycleMonths;
+                                        setCurrentTenant(prev => ({
+                                            ...prev, 
+                                            paymentCycleMonths: val,
+                                            firstPaymentMonths: updateFirst ? val : prev.firstPaymentMonths
+                                        }))
+                                    }}
+                                    placeholder="3"
+                                    min="1"
+                                    max="12"
+                                />
+                                <span className="text-sm text-slate-500 whitespace-nowrap">个月</span>
+                            </div>
+                            <p className="text-[10px] text-slate-400 mt-1">仅用于系统自动计算应收账期</p>
+                            
+                            {currentTenant.leaseStart && currentTenant.paymentCycleMonths && (
+                                <div className="mt-2 bg-slate-50 rounded border border-slate-200 p-2 max-h-32 overflow-y-auto custom-scrollbar">
+                                    <div className="text-[10px] font-bold text-slate-600 mb-1 sticky top-0 bg-slate-50">首年付款计划预览:</div>
+                                    <div className="space-y-1.5">
+                                        {paymentPreview.map((item, idx) => (
+                                            <div key={idx} className="flex justify-between text-[10px] text-slate-600 border-b border-slate-100 last:border-0 pb-1">
+                                                <span className="font-mono text-blue-600">{item.date}</span>
+                                                <span className="text-slate-400 scale-90 origin-right">{item.period}</span>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
                         </div>
+                        
                         <div>
                             <label className="block text-sm font-medium text-slate-700 mb-1">首期缴纳月数</label>
                             <input 

@@ -1,5 +1,6 @@
 
 
+
 import { GoogleGenAI } from "@google/genai";
 import { DashboardData, KeyMoment } from "../types";
 
@@ -95,22 +96,25 @@ export const analyzeBudget = async (data: any, type: 'Occupancy' | 'Revenue' | '
 export interface TenantSearchResult {
     moments: KeyMoment[];
     foundingDate?: string;
+    industry?: string;
 }
 
 export const searchTenantInsights = async (tenantName: string): Promise<TenantSearchResult> => {
   try {
     const model = 'gemini-2.5-flash';
     const prompt = `
-      Search for key public events for the company "${tenantName}" on the web.
+      Search for key public events and details for the company "${tenantName}" on the web.
       I am specifically looking for:
       1. Company founding date (to celebrate anniversaries). This is high priority.
-      2. Major product launches or updates in the last 2 years.
-      3. Significant corporate news (funding, awards, strategic partnerships) in the last year.
+      2. The industry or sector the company belongs to (e.g., "Artificial Intelligence", "E-commerce", "Biotech").
+      3. Major product launches or updates in the last 2 years.
+      4. Significant corporate news (funding, awards, strategic partnerships) in the last year.
 
       Return the result as a raw JSON object. Do not wrap in markdown code blocks.
       The JSON object must have this structure:
       {
         "foundingDate": "YYYY-MM-DD", // Or "YYYY-MM" if day is unknown. If not found, use null.
+        "industry": "String (Short industry name)",
         "moments": [
             {
                 "title": "Short headline",
@@ -143,6 +147,7 @@ export const searchTenantInsights = async (tenantName: string): Promise<TenantSe
         const parsed = JSON.parse(jsonStr);
         let moments: KeyMoment[] = [];
         let foundingDate: string | undefined = undefined;
+        let industry: string | undefined = undefined;
 
         if (parsed.moments && Array.isArray(parsed.moments)) {
             moments = parsed.moments.map((item: any, index: number) => {
@@ -157,11 +162,10 @@ export const searchTenantInsights = async (tenantName: string): Promise<TenantSe
             });
         }
         
-        if (parsed.foundingDate) {
-            foundingDate = parsed.foundingDate;
-        }
+        if (parsed.foundingDate) foundingDate = parsed.foundingDate;
+        if (parsed.industry) industry = parsed.industry;
 
-        return { moments, foundingDate };
+        return { moments, foundingDate, industry };
 
     } catch (e) {
         console.error("Failed to parse AI response for insights", e);
