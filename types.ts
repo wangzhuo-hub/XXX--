@@ -58,7 +58,7 @@ export interface Tenant {
   rootId?: string; // 根ID，用于关联同一个客户的历史续签记录
   name: string;
   contactInfo?: string;
-  industry?: string; // New: AI collected industry
+  industry?: string;
   
   // Basic Info for Insights
   foundingDate?: string; // YYYY-MM-DD
@@ -83,8 +83,8 @@ export interface Tenant {
   rentFreePeriods: RentFreePeriod[];
 
   // Payment Terms
-  paymentCycle: PaymentCycle; // Kept for legacy compatibility
-  paymentCycleMonths?: number; // New: Flexible months input (e.g., 1-12)
+  paymentCycle: PaymentCycle;
+  paymentCycleMonths?: number; // Flexible months input (e.g. 1, 3, 6, 12)
   firstPaymentDate: string;
   firstPaymentMonths?: number;
   
@@ -240,7 +240,7 @@ export interface BudgetScenario {
 export interface TenantSearchResult {
     moments: KeyMoment[];
     foundingDate?: string;
-    industry?: string; // New: AI extracted industry
+    industry?: string;
 }
 
 export interface DashboardData {

@@ -1,12 +1,3 @@
-
-
-
-
-
-
-
-
-
 import React, { useState, useMemo, useEffect } from 'react';
 import { Building, Tenant, BudgetAssumption, ContractStatus, UnitStatus, BudgetAdjustment, BudgetAnalysisData, PaymentRecord, BudgetScenario } from '../types';
 import { Calculator, Calendar, DollarSign, TrendingUp, Save, Table, LayoutList, ChevronRight, ChevronDown, Download, ShieldAlert, ArrowRight, Maximize2, Minimize2, LineChart as LineChartIcon, Lightbulb, Edit3, X, Sparkles, PieChart, Activity, RotateCcw, TrendingDown, ArrowUpRight, ArrowDownRight, ArrowLeftRight, History, FileText, Info, FileWarning, Layers, Building as BuildingIcon, CheckCircle2, Copy, CloudUpload, Play, Trash2, Plus, Check } from 'lucide-react';
@@ -46,58 +37,12 @@ const getDaysDiff = (start: Date, end: Date): number => {
     return Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
 };
 
-// Helper to calculate exact rent for a period, handling Rent Free and Dynamic Price Changes
-const calculateRentForPeriod = (
-    start: Date,
-    end: Date,
-    baseDailyRent: number,
-    rentFreePeriods: { start: string, end: string }[],
-    priceAdjustment?: { startDate: string, endDate?: string, newDailyRent: number }
-): number => {
-    // Optimization: If no complex rules, use simple math
-    if ((!rentFreePeriods || rentFreePeriods.length === 0) && !priceAdjustment) {
-        return getDaysDiff(start, end) * baseDailyRent;
-    }
-
-    let totalRent = 0;
-    const cursor = new Date(start);
-    // Ensure we don't loop forever or process invalid ranges
-    if (cursor > end) return 0;
-
-    const adjStart = priceAdjustment ? new Date(priceAdjustment.startDate).getTime() : 0;
-    const adjEnd = priceAdjustment?.endDate ? new Date(priceAdjustment.endDate).getTime() : 32503680000000; // Far future
-
-    // Iterate day by day for accuracy with mixed rules
-    // Since billing cycles are usually max 1 year (365 iterations), this is performant enough
-    while (cursor <= end) {
-        const cTime = cursor.getTime();
-        
-        // Is Rent Free?
-        const isFree = rentFreePeriods.some(rf => {
-            const rfS = new Date(rf.start).getTime();
-            const rfE = new Date(rf.end).getTime();
-            return cTime >= rfS && cTime <= rfE;
-        });
-
-        if (!isFree) {
-            let daily = baseDailyRent;
-            if (priceAdjustment && cTime >= adjStart && cTime <= adjEnd) {
-                daily = priceAdjustment.newDailyRent;
-            }
-            totalRent += daily;
-        }
-        cursor.setDate(cursor.getDate() + 1);
-    }
-    
-    return totalRent;
-};
-
 const calculateBillEvents = (
     year: number,
     leaseStartStr: string,
     leaseEndStr: string,
     firstPaymentDateStr: string,
-    cycleMonths: number, // Use number instead of string enum
+    paymentCycleMonths: number,
     firstPaymentMonths: number,
     baseDailyRent: number,
     rentFreePeriods: { start: string, end: string }[],
@@ -113,7 +58,7 @@ const calculateBillEvents = (
 
     if (leaseStart > yearEnd || leaseEnd < yearStart) return monthlyData;
 
-    // Fill "Active" or "Vacant" status purely based on lease duration first for visual timeline
+    // 1. Fill "Active" Status based on physical occupancy (coverage period)
     for (let m = 0; m < 12; m++) {
         const mStart = new Date(year, m, 1);
         const mEnd = new Date(year, m + 1, 0);
@@ -129,12 +74,19 @@ const calculateBillEvents = (
         }
     }
 
-    // --- Billing Logic (Cash Flow / Full Cycle) ---
-    let currentBillDate = new Date(firstPaymentDateStr);
+    // 2. Billing Logic
+    const standardMonthlyRent = (baseDailyRent * 365) / 12;
+
+    let currentBillDate = firstPaymentDateStr ? new Date(firstPaymentDateStr) : new Date(leaseStart);
+    if (!firstPaymentDateStr) {
+        currentBillDate = new Date(leaseStart);
+        currentBillDate.setMonth(currentBillDate.getMonth() - 1);
+    }
+
     let coverageStart = new Date(leaseStart);
     let isFirstCycle = true;
     
-    const regularCycleMonths = cycleMonths > 0 ? cycleMonths : 3; // Default 3 if 0/undefined
+    const regularCycleMonths = paymentCycleMonths || 3;
     const firstCycleMonths = firstPaymentMonths > 0 ? firstPaymentMonths : regularCycleMonths;
 
     let safety = 0;
@@ -148,31 +100,55 @@ const calculateBillEvents = (
         
         const effectiveCoverageEnd = coverageEnd > leaseEnd ? leaseEnd : coverageEnd;
         
-        const billAmount = calculateRentForPeriod(
-            coverageStart, 
-            effectiveCoverageEnd, 
-            baseDailyRent, 
-            rentFreePeriods, 
-            priceAdjustment
-        );
+        // Calculate Rent Free Days
+        let freeDays = 0;
+        rentFreePeriods.forEach(rf => {
+            const rfStart = new Date(rf.start);
+            const rfEnd = new Date(rf.end);
+            freeDays += getOverlapDays(coverageStart, effectiveCoverageEnd, rfStart, rfEnd);
+        });
+
+        // Determine effective monthly rent
+        let currentMonthlyRent = standardMonthlyRent;
+        if (priceAdjustment && new Date(priceAdjustment.startDate) <= effectiveCoverageEnd) {
+             currentMonthlyRent = (priceAdjustment.newDailyRent * 365) / 12;
+        }
+
+        // Pro-rate if last cycle is cut short
+        const fullCycleDays = getDaysDiff(coverageStart, coverageEnd);
+        const actualDays = getDaysDiff(coverageStart, effectiveCoverageEnd);
+        
+        let grossAmount = 0;
+        if (actualDays >= fullCycleDays - 5) {
+             grossAmount = currentMonthlyRent * durationMonths;
+        } else {
+             grossAmount = (currentMonthlyRent * 12 / 365) * actualDays;
+        }
+
+        // Deduct Rent Free
+        const deduction = (currentMonthlyRent / 30) * freeDays;
+        const netAmount = Math.max(0, grossAmount - deduction);
 
         if (currentBillDate.getFullYear() === year) {
             const monthIdx = currentBillDate.getMonth();
             if (monthIdx >= 0 && monthIdx <= 11) {
-                monthlyData[monthIdx].amount += billAmount;
+                monthlyData[monthIdx].amount += netAmount;
             }
         }
 
         coverageStart = new Date(effectiveCoverageEnd);
         coverageStart.setDate(coverageStart.getDate() + 1);
-        currentBillDate = new Date(coverageStart); 
+        
+        // Next bill date logic
+        currentBillDate = new Date(coverageStart);
+        currentBillDate.setMonth(currentBillDate.getMonth() - 1);
+        
         isFirstCycle = false;
     }
 
     return monthlyData;
 };
 
-// ... (BudgetImpactSummary Component kept same) ...
 const BudgetImpactSummary: React.FC<{ 
     budgetAssumptions: BudgetAssumption[], 
     detailYear: number,
@@ -190,8 +166,8 @@ const BudgetImpactSummary: React.FC<{
             year,
             start.toISOString().split('T')[0],
             end.toISOString().split('T')[0],
-            start.toISOString().split('T')[0],
-            3, // Assumption default Quarterly
+            start.toISOString().split('T')[0], // First payment date default
+            3, // Quarterly default
             3,
             dailyRent,
             []
@@ -338,12 +314,10 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
 
   const { buildings, tenants, assumptions: budgetAssumptions, adjustments: budgetAdjustments } = effectiveData;
 
-  // Removed 'Existing' from activeTab default and types
   const [activeTab, setActiveTab] = useState<'Vacancy' | 'Renewal' | 'Risk'>('Vacancy');
   const [viewMode, setViewMode] = useState<'Settings' | 'Monthly' | 'Execution'>('Settings');
   const [detailYear, setDetailYear] = useState<number>(currentYear);
   const [isFullScreen, setIsFullScreen] = useState(false);
-  const [groupBy, setGroupBy] = useState<'Category' | 'Building'>('Category');
   
   const [isAnalyzingOccupancy, setIsAnalyzingOccupancy] = useState(false);
   const [isAnalyzingRevenue, setIsAnalyzingRevenue] = useState(false);
@@ -470,10 +444,6 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
     return tenants.filter(t => t.isRisk && t.status === ContractStatus.Active);
   }, [tenants]);
 
-  const activeTenants = useMemo(() => {
-      return tenants.filter(t => t.status === ContractStatus.Active);
-  }, [tenants]);
-
   const yearOptions = useMemo(() => {
       return Array.from({length: 11}, (_, i) => currentYear - 5 + i);
   }, [currentYear]);
@@ -538,7 +508,6 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
           const baseDailyRent = t.unitPrice ? (t.unitPrice * t.totalArea) : (t.monthlyRent * 12 / 365);
           let priceAdjustment = undefined;
           
-          // Existing assumption price adjustment logic is removed from UI but kept here just in case legacy data exists
           if (existingAssumption?.priceAdjustment) {
               priceAdjustment = {
                   startDate: existingAssumption.priceAdjustment.startDate,
@@ -547,17 +516,12 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
               };
           }
 
-          // Use Flexible Cycle from tenant data, fallback to legacy mapping
-          const cycleMonths = t.paymentCycleMonths 
-              ? t.paymentCycleMonths 
-              : (t.paymentCycle === 'Quarterly' ? 3 : t.paymentCycle === 'SemiAnnual' ? 6 : t.paymentCycle === 'Annual' ? 12 : 1);
-
           const existingBills = calculateBillEvents(
               year, t.leaseStart, effectiveLeaseEnd, t.firstPaymentDate || t.leaseStart, 
-              cycleMonths, // Use Number
-              t.firstPaymentMonths || cycleMonths, 
+              t.paymentCycleMonths || (t.paymentCycle === 'Monthly' ? 1 : 3), // USE MONTHS
+              t.firstPaymentMonths || 3, 
               baseDailyRent, t.rentFreePeriods || [],
-              priceAdjustment
+              priceAdjustment 
           );
           let finalMonthlyValues = [...existingBills];
           
@@ -602,7 +566,7 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
                  const newDailyRent = assumption.projectedUnitPrice * t.totalArea;
                  const newBills = calculateBillEvents(
                      year, newStreamStartStr, newStreamEnd.toISOString().split('T')[0], newStreamStartStr,
-                     3, 3, newDailyRent, newRentFree // Assumptions still default to 3
+                     3, 3, newDailyRent, newRentFree
                  );
                  finalMonthlyValues = finalMonthlyValues.map((v, i) => {
                       const r = newBills[i];
@@ -681,125 +645,6 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
 
   const monthlyRows: any[] = useMemo(() => generateMonthlyDetail(detailYear), [detailYear, tenants, vacantUnits, budgetAssumptions, riskTenants, budgetAdjustments]);
 
-  // ... (handleExportScenario, actualsMap, groupedRows, etc. kept same) ...
-  const handleExportScenario = () => {
-      const scenarioName = activeScenarioId === 'current' ? '当前生效方案' : scenarios.find(s => s.id === activeScenarioId)?.name || '未命名';
-      
-      let html = `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">
-      <head>
-        <meta http-equiv="content-type" content="application/vnd.ms-excel; charset=UTF-8">
-      </head>
-      <body>`;
-
-      html += `<h2>预算方案: ${scenarioName}</h2>`;
-      html += `<p>导出时间: ${new Date().toLocaleString()}</p>`;
-      
-      // Table 1: Assumptions
-      html += `<h3>1. 预算假设设定 (Budget Assumptions)</h3>`;
-      html += `<table border="1">
-        <thead>
-            <tr style="background-color: #f0f9ff;">
-                <th>类型 (Type)</th>
-                <th>目标对象 (Target)</th>
-                <th>策略 (Strategy)</th>
-                <th>预计日期 (Date)</th>
-                <th>预计单价 (Price)</th>
-                <th>免租期(月)</th>
-                <th>空置期(月)</th>
-                <th>调价设定 (Existing)</th>
-                <th>账期调整 (Payment Shift)</th>
-            </tr>
-        </thead>
-        <tbody>`;
-      
-      budgetAssumptions.forEach(asm => {
-          let priceAdjStr = '-';
-          if (asm.priceAdjustment) {
-              priceAdjStr = `新价:${asm.priceAdjustment.newUnitPrice} (${asm.priceAdjustment.startDate}起)`;
-          }
-          let shiftStr = '-';
-          if (asm.paymentShift && asm.paymentShift.isActive) {
-              shiftStr = `${asm.paymentShift.fromYear}-${asm.paymentShift.fromMonth+1}月 -> ${asm.paymentShift.toYear}-${asm.paymentShift.toMonth+1}月 (¥${asm.paymentShift.amount})`;
-          }
-
-          html += `<tr>
-            <td>${asm.targetType}</td>
-            <td>${asm.targetName}</td>
-            <td>${asm.strategy || '-'}</td>
-            <td>${asm.projectedSignDate || asm.projectedTerminationDate || '-'}</td>
-            <td>${asm.projectedUnitPrice || '-'}</td>
-            <td>${asm.projectedRentFreeMonths || 0}</td>
-            <td>${asm.vacancyGapMonths || '-'}</td>
-            <td>${priceAdjStr}</td>
-            <td>${shiftStr}</td>
-          </tr>`;
-      });
-      html += `</tbody></table>`;
-
-      // Table 2: Adjustments
-      html += `<h3>2. 手动调整明细 (Manual Adjustments)</h3>`;
-      html += `<table border="1">
-        <thead>
-            <tr style="background-color: #f0fdf4;">
-                <th>客户 (Tenant)</th>
-                <th>原账期 (Original)</th>
-                <th>调整后账期 (Adjusted)</th>
-                <th>金额 (Amount)</th>
-                <th>原因 (Reason)</th>
-            </tr>
-        </thead>
-        <tbody>`;
-      
-      budgetAdjustments.forEach(adj => {
-          html += `<tr>
-            <td>${adj.tenantName}</td>
-            <td>${adj.originalYear}年${adj.originalMonth+1}月</td>
-            <td>${adj.adjustedYear}年${adj.adjustedMonth+1}月</td>
-            <td>${adj.amount}</td>
-            <td>${adj.reason}</td>
-          </tr>`;
-      });
-      html += `</tbody></table>`;
-
-      if (monthlyRows && monthlyRows.length > 0) {
-          html += `<h3>3. ${detailYear}年度 月度预算明细预览</h3>`;
-          html += `<table border="1">
-            <thead>
-                <tr style="background-color: #f8fafc;">
-                    <th>客户/单元</th>
-                    <th>分类</th>
-                    <th>1月</th><th>2月</th><th>3月</th><th>4月</th><th>5月</th><th>6月</th>
-                    <th>7月</th><th>8月</th><th>9月</th><th>10月</th><th>11月</th><th>12月</th>
-                    <th>合计</th>
-                </tr>
-            </thead>
-            <tbody>`;
-          
-          monthlyRows.forEach((row: any) => {
-              const total = row.monthlyValues.reduce((s:number, v:any) => s + v.amount, 0);
-              html += `<tr>
-                <td>${row.name}</td>
-                <td>${row.category}</td>
-                ${row.monthlyValues.map((v:any) => `<td>${v.amount > 0 ? v.amount : ''}</td>`).join('')}
-                <td>${total}</td>
-              </tr>`;
-          });
-          html += `</tbody></table>`;
-      }
-
-      html += `</body></html>`;
-
-      const blob = new Blob([html], { type: 'application/vnd.ms-excel' });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `Budget_Scenario_${activeScenarioId}_${new Date().toISOString().split('T')[0]}.xls`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
-  };
-
   const actualsMap = useMemo(() => {
       const map: Record<string, number[]> = {};
       payments.forEach(p => {
@@ -817,432 +662,553 @@ export const BudgetManager: React.FC<BudgetManagerProps> = ({
       return map;
   }, [payments, detailYear]);
 
-  const groupedRows = useMemo(() => {
-      const groups: Record<string, any[]> = {};
-      monthlyRows.forEach((row: any) => {
-          const key = groupBy === 'Category' ? row.category : (row.building || '其他');
-          if (!groups[key]) groups[key] = [];
-          groups[key].push(row);
-      });
-      return groups;
-  }, [monthlyRows, groupBy]);
-
-  const sortedGroupKeys = useMemo(() => Object.keys(groupedRows).sort(), [groupedRows]);
-
-  const calculateYearMetrics = (year: number) => {
-      const rows: any[] = generateMonthlyDetail(year);
-      let totalRevenue = 0;
-      let totalLeasableArea = 0;
-      let totalOccupiedAreaMonths = 0; 
-      buildings.forEach(b => b.units.forEach(u => !u.isSelfUse && (totalLeasableArea += u.area)));
-      rows.forEach((row: any) => {
-          if (row.monthlyValues && Array.isArray(row.monthlyValues)) {
-               row.monthlyValues.forEach((val: any) => totalRevenue += val.amount);
-               row.monthlyValues.forEach((val: any) => {
-                  if (val.status === 'Active' || val.status === 'RentFree') totalOccupiedAreaMonths += row.area;
-               });
-          }
-      });
-      const avgOccupancy = totalLeasableArea > 0 ? (totalOccupiedAreaMonths / (totalLeasableArea * 12)) * 100 : 0;
-      const avgPrice = totalOccupiedAreaMonths > 0 ? (totalRevenue / (totalOccupiedAreaMonths * 30)) : 0;
-      return { totalRevenue, avgOccupancy, avgPrice };
-  };
-
-  const comparativeTrend = useMemo(() => {
-      const years = [detailYear - 2, detailYear - 1, detailYear, detailYear + 1, detailYear + 2];
-      return years.map(y => {
-          const m = calculateYearMetrics(y);
-          return { year: y, ...m };
-      });
-  }, [detailYear, tenants, budgetAssumptions, budgetAdjustments]);
-
-  const budgetColumnTotals = useMemo(() => {
-      const totals = Array(12).fill(0);
-      monthlyRows.forEach(row => {
-          row.monthlyValues.forEach((val: any, idx: number) => {
-              totals[idx] += val.amount;
-          });
-      });
-      return totals;
-  }, [monthlyRows]);
-
-  const actualColumnTotals = useMemo(() => {
-      const totals = Array(12).fill(0);
-      Object.values(actualsMap).forEach((months: any) => {
-          (months as number[]).forEach((val, idx) => {
-              if (idx < 12) totals[idx] += val;
-          });
-      });
-      return totals;
-  }, [actualsMap]);
-
-  const grandTotal = budgetColumnTotals.reduce((sum, val) => sum + val, 0);
-
-  const occupancyData = useMemo(() => {
-     let totalLeasable = 0;
-     buildings.forEach(b => b.units.forEach(u => !u.isSelfUse && (totalLeasable += u.area)));
-     return Array.from({length: 12}, (_, i) => {
-         let occupiedArea = 0;
-         monthlyRows.forEach((row: any) => {
-             const status = row.monthlyValues[i].status;
-             if (status === 'Active' || status === 'RentFree') occupiedArea += row.area;
-         });
-         const rate = totalLeasable > 0 ? (occupiedArea / totalLeasable * 100) : 0;
-         return { month: `${i+1}月`, rate: Number(rate.toFixed(1)) };
-     });
-  }, [monthlyRows, detailYear, buildings]);
-
-  const handleAIAnalyze = async (type: 'Occupancy' | 'Revenue' | 'Execution') => {
+  // Handle Gemini Analysis
+  const runAnalysis = async (type: 'Occupancy' | 'Revenue' | 'Execution') => {
+      if (type === 'Execution') setIsAnalyzingExecution(true);
       if (type === 'Occupancy') setIsAnalyzingOccupancy(true);
-      else if (type === 'Revenue') setIsAnalyzingRevenue(true);
-      else setIsAnalyzingExecution(true);
+      if (type === 'Revenue') setIsAnalyzingRevenue(true);
 
-      let dataSummary: any = {};
+      const summary = type === 'Execution' ? {
+          year: detailYear,
+          rows: monthlyRows.map(r => ({
+              tenant: r.name,
+              budget: r.monthlyValues.reduce((a:number,b:any)=>a+b.amount,0),
+              actual: actualsMap[r.id] ? actualsMap[r.id].reduce((a,b)=>a+b,0) : 0
+          })).slice(0, 15) // Top 15 for brevity
+      } : {
+          totalRevenue: monthlyRows.reduce((acc, row) => acc + row.monthlyValues.reduce((s:number, v:any) => s + v.amount, 0), 0),
+          breakdown: monthlyRows.map(r => ({ name: r.name, category: r.category, amount: r.monthlyValues.reduce((s:number, v:any) => s + v.amount, 0) })).slice(0, 10)
+      };
+
+      const result = await analyzeBudget(summary, type);
       
-      if (type === 'Execution') {
-          dataSummary = {
-              year: detailYear,
-              budget: budgetColumnTotals.map(v => Math.round(v)),
-              actual: actualColumnTotals.map(v => Math.round(v)),
-              budgetTotal: grandTotal,
-              actualTotal: actualColumnTotals.reduce((a, b) => a + b, 0),
-              completionRate: grandTotal > 0 ? Math.round((actualColumnTotals.reduce((a, b) => a + b, 0) / grandTotal) * 100) + '%' : '0%'
-          };
-      } else {
-          dataSummary = {
-            year: detailYear,
-            totals: budgetColumnTotals,
-            grandTotal: grandTotal,
-            occupancyTrend: occupancyData.map(d => d.rate),
-            adjustmentCount: budgetAdjustments.length
-          };
-      }
-
-      const result = await analyzeBudget(dataSummary, type);
+      const updatedAnalysis = { ...budgetAnalysis };
+      if (type === 'Occupancy') updatedAnalysis.occupancy = result;
+      if (type === 'Revenue') updatedAnalysis.revenue = result;
+      if (type === 'Execution') updatedAnalysis.execution = result;
       
-      onUpdateAnalysis({
-          ...budgetAnalysis,
-          [type === 'Occupancy' ? 'occupancy' : type === 'Revenue' ? 'revenue' : 'execution']: result
-      });
-
+      onUpdateAnalysis(updatedAnalysis);
+      
+      if (type === 'Execution') setIsAnalyzingExecution(false);
       if (type === 'Occupancy') setIsAnalyzingOccupancy(false);
-      else if (type === 'Revenue') setIsAnalyzingRevenue(false);
-      else setIsAnalyzingExecution(false);
+      if (type === 'Revenue') setIsAnalyzingRevenue(false);
   };
 
-  const openAdjModal = (row: any, monthIdx: number, amount: number) => {
-      if (amount <= 0 || row.category.includes('空置')) return;
-      setAdjData({ tenantId: row.id, tenantName: row.name, originalMonth: monthIdx, amount: amount });
-      setAdjForm({ targetYear: detailYear, targetMonth: monthIdx, reason: '提前预缴' });
+  const openAdjustmentModal = (row: any, monthIdx: number) => {
+      setAdjData({ tenantId: row.id, tenantName: row.name, originalMonth: monthIdx, amount: row.monthlyValues[monthIdx].amount });
+      setAdjForm({ targetYear: detailYear, targetMonth: (monthIdx + 1) % 12, reason: 'Deferred Payment / Adjustment' });
       setShowAdjModal(true);
   };
 
-  const handleSaveAdjustment = () => {
-      if (!adjData || !handleUpdateAdjustments) return;
+  const saveAdjustment = () => {
+      if (!adjData) return;
       const newAdj: BudgetAdjustment = {
-          id: `adj_${Date.now()}`, tenantId: adjData.tenantId, tenantName: adjData.tenantName,
-          originalYear: detailYear, originalMonth: adjData.originalMonth,
-          adjustedYear: adjForm.targetYear, adjustedMonth: adjForm.targetMonth,
-          amount: adjData.amount, reason: adjForm.reason
+          id: `adj_${Date.now()}`,
+          tenantId: adjData.tenantId,
+          tenantName: adjData.tenantName,
+          originalYear: detailYear,
+          originalMonth: adjData.originalMonth,
+          adjustedYear: adjForm.targetYear,
+          adjustedMonth: adjForm.targetMonth,
+          amount: adjData.amount,
+          reason: adjForm.reason
       };
       handleUpdateAdjustments([...budgetAdjustments, newAdj]);
       setShowAdjModal(false);
   };
 
-  const handleUndoAdjustment = () => {
-      if (budgetAdjustments.length === 0) return;
-      if (window.confirm("确定撤销上一次的调整操作吗？")) {
-          const newAdj = [...budgetAdjustments];
-          newAdj.pop();
-          handleUpdateAdjustments(newAdj);
-      }
+  const renderDetailTable = () => {
+    const months = Array.from({length: 12}, (_, i) => `${i + 1}月`);
+    
+    // Calculate totals for footer
+    const totals = Array(12).fill(0);
+    const actualsTotals = Array(12).fill(0);
+    
+    monthlyRows.forEach(row => {
+        row.monthlyValues.forEach((v: any, i: number) => totals[i] += v.amount);
+        if (viewMode === 'Execution' && actualsMap[row.id]) {
+            actualsMap[row.id].forEach((val, i) => actualsTotals[i] += val);
+        }
+    });
+
+    const grandTotalBudget = totals.reduce((a, b) => a + b, 0);
+    const grandTotalActual = actualsTotals.reduce((a, b) => a + b, 0);
+
+    return (
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden flex flex-col h-full animate-in fade-in zoom-in-50 duration-300">
+             {/* Toolbar */}
+             <div className="p-4 border-b border-slate-200 flex flex-wrap justify-between items-center gap-4 bg-slate-50">
+                 <div className="flex items-center gap-4">
+                     <h3 className="font-bold text-slate-800 flex items-center gap-2">
+                         {viewMode === 'Execution' ? <Activity size={18}/> : <Table size={18}/>}
+                         {viewMode === 'Execution' ? '预算执行跟踪 (Budget vs Actual)' : '月度预算明细 (Budget Detail)'}
+                     </h3>
+                     <div className="flex items-center bg-white border border-slate-300 rounded-lg p-0.5 shadow-sm">
+                        <button onClick={() => setDetailYear(detailYear - 1)} className="p-1 hover:bg-slate-100 rounded text-slate-600"><ChevronDown className="rotate-90" size={16}/></button>
+                        <span className="px-3 text-sm font-bold text-slate-700">{detailYear}年</span>
+                        <button onClick={() => setDetailYear(detailYear + 1)} className="p-1 hover:bg-slate-100 rounded text-slate-600"><ChevronDown className="-rotate-90" size={16}/></button>
+                     </div>
+                 </div>
+                 <div className="flex items-center gap-2">
+                     <button onClick={() => setIsFullScreen(!isFullScreen)} className="p-2 text-slate-500 hover:bg-slate-200 rounded-lg" title={isFullScreen ? "退出全屏" : "全屏模式"}>
+                         {isFullScreen ? <Minimize2 size={18}/> : <Maximize2 size={18}/>}
+                     </button>
+                 </div>
+             </div>
+             
+             {viewMode === 'Execution' && (
+                 <div className="p-4 bg-emerald-50 border-b border-emerald-100 flex justify-between items-center">
+                      <div className="flex gap-8">
+                          <div>
+                              <div className="text-xs text-emerald-600 uppercase font-bold">全年预算收入</div>
+                              <div className="text-lg font-bold text-emerald-800">¥{(grandTotalBudget/10000).toFixed(1)}万</div>
+                          </div>
+                          <div>
+                              <div className="text-xs text-blue-600 uppercase font-bold">全年实际回款</div>
+                              <div className="text-lg font-bold text-blue-800">¥{(grandTotalActual/10000).toFixed(1)}万</div>
+                          </div>
+                          <div>
+                              <div className="text-xs text-slate-500 uppercase font-bold">达成率</div>
+                              <div className={`text-lg font-bold ${grandTotalActual >= grandTotalBudget ? 'text-green-600' : 'text-amber-600'}`}>
+                                  {grandTotalBudget > 0 ? ((grandTotalActual / grandTotalBudget) * 100).toFixed(1) : '0.0'}%
+                              </div>
+                          </div>
+                      </div>
+                      <button 
+                        onClick={() => runAnalysis('Execution')}
+                        disabled={isAnalyzingExecution}
+                        className="flex items-center gap-1 bg-white border border-emerald-200 text-emerald-600 px-3 py-1.5 rounded-lg text-xs font-medium hover:bg-emerald-100 disabled:opacity-50"
+                      >
+                         {isAnalyzingExecution ? <Sparkles size={14} className="animate-spin"/> : <Sparkles size={14}/>} AI 差异分析
+                      </button>
+                 </div>
+             )}
+             
+             {/* Table Content */}
+             <div className="flex-1 overflow-auto">
+                 <table className="w-full text-xs text-left border-collapse">
+                     <thead className="bg-slate-100 text-slate-600 font-bold sticky top-0 z-20 shadow-sm">
+                         <tr>
+                             <th className="p-3 border-r border-slate-200 min-w-[120px] sticky left-0 bg-slate-100 z-30">客户/单元</th>
+                             <th className="p-3 border-r border-slate-200 min-w-[80px]">分类</th>
+                             <th className="p-3 border-r border-slate-200 min-w-[80px]">面积(㎡)</th>
+                             <th className="p-3 border-r border-slate-200 min-w-[80px]">单价</th>
+                             {months.map(m => (
+                                 <th key={m} className="p-3 text-right min-w-[90px] border-r border-slate-200">{m}</th>
+                             ))}
+                             <th className="p-3 text-right min-w-[100px] bg-slate-200">合计</th>
+                         </tr>
+                     </thead>
+                     <tbody className="divide-y divide-slate-100">
+                         {monthlyRows.map(row => {
+                             const rowTotal = row.monthlyValues.reduce((a:number, b:any) => a + b.amount, 0);
+                             const actualRow = actualsMap[row.id];
+                             const actualTotal = actualRow ? actualRow.reduce((a,b)=>a+b,0) : 0;
+
+                             return (
+                                 <React.Fragment key={row.id}>
+                                     <tr className="hover:bg-slate-50 group">
+                                         <td className="p-3 border-r border-slate-200 font-medium text-slate-800 sticky left-0 bg-white group-hover:bg-slate-50 z-10 border-b border-slate-100">
+                                             <div className="truncate w-32" title={row.name}>{row.name}</div>
+                                             <div className="text-[10px] text-slate-400 truncate w-32" title={row.location}>{row.location}</div>
+                                         </td>
+                                         <td className="p-3 border-r border-slate-200 border-b border-slate-100 text-slate-500">{row.category.split(' ')[0]}</td>
+                                         <td className="p-3 border-r border-slate-200 border-b border-slate-100 text-slate-600">{row.area}</td>
+                                         <td className="p-3 border-r border-slate-200 border-b border-slate-100 text-slate-600">¥{row.unitPrice}</td>
+                                         {row.monthlyValues.map((v: any, i: number) => {
+                                             const actual = actualRow ? actualRow[i] : 0;
+                                             const isDiff = viewMode === 'Execution' && Math.abs(actual - v.amount) > 100;
+                                             
+                                             return (
+                                                 <td key={i} className={`p-2 text-right border-r border-slate-200 border-b border-slate-100 relative ${v.amount > 0 ? 'bg-blue-50/30' : ''}`}>
+                                                     <div className="font-medium text-slate-700">
+                                                        {v.amount > 0 ? `¥${Math.round(v.amount).toLocaleString()}` : '-'}
+                                                     </div>
+                                                     {viewMode === 'Execution' && (
+                                                         <div className={`text-[10px] mt-0.5 ${actual >= v.amount ? 'text-emerald-600' : 'text-rose-500'}`}>
+                                                             act: {actual > 0 ? `¥${Math.round(actual).toLocaleString()}` : '-'}
+                                                         </div>
+                                                     )}
+                                                     {/* Interactive Adjustment Trigger */}
+                                                     {v.amount > 0 && viewMode !== 'Execution' && (
+                                                         <button 
+                                                             onClick={() => openAdjustmentModal(row, i)}
+                                                             className="absolute top-1 right-1 opacity-0 group-hover:opacity-100 p-0.5 bg-white border rounded text-slate-400 hover:text-blue-600"
+                                                             title="调整/缓缴"
+                                                         >
+                                                             <ArrowRight size={10} />
+                                                         </button>
+                                                     )}
+                                                 </td>
+                                             );
+                                         })}
+                                         <td className="p-3 text-right font-bold bg-slate-50 border-b border-slate-200 text-slate-800">
+                                             <div>¥{Math.round(rowTotal).toLocaleString()}</div>
+                                             {viewMode === 'Execution' && (
+                                                 <div className={`text-[10px] mt-0.5 ${actualTotal >= rowTotal ? 'text-emerald-600' : 'text-rose-500'}`}>
+                                                     {actualTotal > 0 ? `¥${Math.round(actualTotal).toLocaleString()}` : '-'}
+                                                 </div>
+                                             )}
+                                         </td>
+                                     </tr>
+                                 </React.Fragment>
+                             );
+                         })}
+                     </tbody>
+                     <tfoot className="bg-slate-100 font-bold text-slate-700 sticky bottom-0 z-20 shadow-[0_-2px_10px_rgba(0,0,0,0.05)]">
+                         <tr>
+                             <td colSpan={4} className="p-3 text-right border-r border-slate-200 sticky left-0 bg-slate-100 z-30">
+                                 {viewMode === 'Execution' ? '预算总计 / 实际总计' : '月度预算合计'}
+                             </td>
+                             {totals.map((t, i) => (
+                                 <td key={i} className="p-3 text-right border-r border-slate-200">
+                                     <div>¥{Math.round(t).toLocaleString()}</div>
+                                     {viewMode === 'Execution' && (
+                                         <div className="text-[10px] text-slate-500">
+                                             ¥{Math.round(actualsTotals[i]).toLocaleString()}
+                                         </div>
+                                     )}
+                                 </td>
+                             ))}
+                             <td className="p-3 text-right bg-slate-200">
+                                 <div>¥{Math.round(grandTotalBudget).toLocaleString()}</div>
+                                 {viewMode === 'Execution' && (
+                                     <div className="text-[10px] text-slate-600">
+                                         ¥{Math.round(grandTotalActual).toLocaleString()}
+                                     </div>
+                                 )}
+                             </td>
+                         </tr>
+                     </tfoot>
+                 </table>
+             </div>
+        </div>
+    );
   };
 
-  const renderDetailTable = () => (
-    <div className={`bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden ${isFullScreen ? 'flex flex-col h-full' : ''}`}>
-        <div className="p-4 border-b border-slate-200 flex justify-between items-center bg-slate-50 flex-shrink-0">
-            <div className="flex items-center gap-4">
-                <h3 className="font-bold text-slate-800 flex items-center gap-2">
-                    {viewMode === 'Execution' ? <CheckCircle2 size={18} /> : <Calendar size={18} />}
-                    {detailYear}年度 {viewMode === 'Execution' ? '预算执行实况 (Budget vs Actual)' : '现金流预算明细表'}
+  const renderSettingsView = () => (
+      <div className="bg-white rounded-xl border border-slate-200 shadow-sm flex flex-col h-full animate-in fade-in zoom-in-50 duration-300">
+         <div className="p-6 border-b border-slate-200 flex justify-between items-center bg-slate-50">
+             <div>
+                <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
+                    <Calculator size={20} className="text-blue-600" />
+                    预算假设参数设定 (Assumptions)
                 </h3>
-                <div className="flex bg-white border border-slate-200 rounded-lg p-0.5">
-                    <button onClick={() => setDetailYear(detailYear - 1)} className="p-1 hover:bg-slate-100 rounded"><ChevronDown className="rotate-90" size={16}/></button>
-                    <span className="px-3 py-1 text-sm font-bold text-slate-700">{detailYear}</span>
-                    <button onClick={() => setDetailYear(detailYear + 1)} className="p-1 hover:bg-slate-100 rounded"><ChevronRight size={16}/></button>
-                </div>
-            </div>
-            <div className="flex items-center gap-4">
-                <div className="flex items-center gap-2 text-sm bg-white border border-slate-200 rounded-lg p-1">
-                    <span className="text-slate-400 text-xs px-2">分类显示:</span>
-                    <button onClick={() => setGroupBy('Category')} className={`px-3 py-1 rounded-md text-xs font-medium transition-colors flex items-center gap-1 ${groupBy === 'Category' ? 'bg-blue-50 text-blue-600 border border-blue-100' : 'text-slate-500 hover:text-slate-700'}`}><Layers size={12} /> 类型</button>
-                    <button onClick={() => setGroupBy('Building')} className={`px-3 py-1 rounded-md text-xs font-medium transition-colors flex items-center gap-1 ${groupBy === 'Building' ? 'bg-blue-50 text-blue-600 border border-blue-100' : 'text-slate-500 hover:text-slate-700'}`}><BuildingIcon size={12} /> 楼栋</button>
-                </div>
-                <div className="h-4 w-px bg-slate-300"></div>
-                <div className="flex gap-2">
-                    {viewMode === 'Monthly' && <button onClick={handleUndoAdjustment} disabled={budgetAdjustments.length === 0} className="flex items-center gap-1 px-3 py-1.5 bg-white border border-slate-200 text-slate-600 rounded-lg text-xs hover:bg-slate-50 disabled:opacity-50"><RotateCcw size={14} /> 撤销调整</button>}
-                    {isFullScreen && <button onClick={() => setIsFullScreen(false)} className="flex items-center gap-1 px-3 py-1.5 bg-slate-800 text-white rounded-lg text-xs hover:bg-slate-700"><Minimize2 size={14} /> 退出全屏</button>}
-                </div>
-            </div>
-        </div>
-        
-        {viewMode === 'Execution' && (
-            <div className="p-4 border-b border-slate-200 bg-emerald-50/30">
-                <div className="bg-white p-4 rounded-xl border border-emerald-100 shadow-sm flex flex-col">
-                    <div className="flex justify-between items-center mb-3">
-                        <h4 className="font-bold text-emerald-800 flex items-center gap-2 text-sm">
-                            <Activity size={16} /> 预算 vs 实际 差异分析
-                        </h4>
-                        <button onClick={() => handleAIAnalyze('Execution')} disabled={isAnalyzingExecution} className="text-xs bg-emerald-100 text-emerald-700 px-3 py-1.5 rounded-full flex items-center gap-1 hover:bg-emerald-200 transition-colors">
-                            <Sparkles size={12}/> {isAnalyzingExecution ? 'AI 分析中...' : '生成差异分析报告'}
-                        </button>
-                    </div>
-                    <textarea 
-                        className="w-full p-3 bg-slate-50 border border-slate-200 rounded-lg text-sm text-slate-700 focus:ring-2 focus:ring-emerald-100 outline-none resize-none h-20"
-                        placeholder="点击上方按钮，AI 将根据本年度预算与实际回款数据生成对比分析..."
-                        value={budgetAnalysis.execution || ''}
-                        onChange={e => onUpdateAnalysis({...budgetAnalysis, execution: e.target.value})}
-                    />
-                </div>
-            </div>
-        )}
-
-        <div className={`overflow-x-auto ${isFullScreen ? 'flex-1 overflow-y-auto' : 'max-h-[600px]'}`}>
-            <table className="w-full text-xs text-left border-collapse">
-                <thead className="bg-slate-100 text-slate-500 font-medium sticky top-0 z-10 shadow-sm">
-                    <tr>
-                        <th className="px-3 py-3 border-r border-slate-200 min-w-[150px] sticky left-0 bg-slate-100 z-20">客户名称</th>
-                        <th className="px-2 py-3 border-r border-slate-200 min-w-[80px]">房号</th>
-                        <th className="px-2 py-3 border-r border-slate-200 min-w-[60px] text-right">面积(㎡)</th>
-                        <th className="px-2 py-3 border-r border-slate-200 min-w-[80px] text-right">单价</th>
-                        <th className="px-2 py-3 border-r border-slate-200 w-20 text-center">{groupBy === 'Category' ? '楼栋' : '类型'}</th>
-                        {Array.from({length: 12}).map((_, i) => <th key={i} className="px-2 py-3 border-r border-slate-200 min-w-[80px] text-right font-normal">{i+1}月</th>)}
-                        <th className="px-3 py-3 min-w-[100px] text-right bg-blue-50/50">合计</th>
-                    </tr>
-                    {viewMode === 'Execution' && (
-                        <>
-                            <tr className="bg-blue-50/50 text-blue-800 border-b border-blue-100">
-                                <td colSpan={5} className="px-3 py-2 text-right font-bold sticky left-0 bg-blue-50/50 z-20">年度预算目标 (Budget)</td>
-                                {budgetColumnTotals.map((val, i) => <td key={i} className="px-2 py-2 text-right font-medium border-r border-blue-100">{val > 0 ? (val/10000).toFixed(1) + 'w' : '-'}</td>)}
-                                <td className="px-2 py-2 text-right font-bold">{(budgetColumnTotals.reduce((a,b)=>a+b,0)/10000).toFixed(1)}w</td>
-                            </tr>
-                            <tr className="bg-emerald-50/50 text-emerald-800 border-b border-emerald-100">
-                                <td colSpan={5} className="px-3 py-2 text-right font-bold sticky left-0 bg-emerald-50/50 z-20">实际回款达成 (Actual)</td>
-                                {actualColumnTotals.map((val, i) => <td key={i} className="px-2 py-2 text-right font-medium border-r border-emerald-100">{val > 0 ? (val/10000).toFixed(1) + 'w' : '-'}</td>)}
-                                <td className="px-2 py-2 text-right font-bold">{(actualColumnTotals.reduce((a,b)=>a+b,0)/10000).toFixed(1)}w</td>
-                            </tr>
-                            <tr className="bg-white text-slate-600 border-b border-slate-200 font-medium">
-                                <td colSpan={5} className="px-3 py-2 text-right sticky left-0 bg-white z-20">月度完成率 (%)</td>
-                                {budgetColumnTotals.map((budget, i) => {
-                                    const actual = actualColumnTotals[i];
-                                    const rate = budget > 0 ? Math.round((actual / budget) * 100) : 0;
-                                    let colorClass = 'text-slate-400';
-                                    if (budget > 0) {
-                                        if (rate >= 100) colorClass = 'text-emerald-600 font-bold';
-                                        else if (rate >= 80) colorClass = 'text-amber-600';
-                                        else colorClass = 'text-rose-600';
-                                    } else if (actual > 0) colorClass = 'text-emerald-600 font-bold'; 
-                                    return <td key={i} className={`px-2 py-2 text-right border-r border-slate-100 ${colorClass}`}>{budget > 0 ? `${rate}%` : actual > 0 ? 'N/A' : '-'}</td>;
-                                })}
-                                <td className="px-2 py-2 text-right text-slate-800 bg-slate-50 font-bold">{grandTotal > 0 ? Math.round((actualColumnTotals.reduce((a,b)=>a+b,0) / grandTotal) * 100) : 0}%</td>
-                            </tr>
-                        </>
-                    )}
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                    {sortedGroupKeys.map(groupKey => {
-                        const rows = groupedRows[groupKey] as any[];
-                        const groupTotals = Array(12).fill(0);
-                        let groupSum = 0;
-                        rows.forEach((r: any) => { r.monthlyValues.forEach((v: any, i: number) => { groupTotals[i] += v.amount; }); });
-                        groupSum = groupTotals.reduce((a, b) => a + b, 0);
-
-                        return (
-                            <React.Fragment key={groupKey}>
-                                <tr className="bg-slate-200/50 font-bold text-slate-700">
-                                    <td colSpan={18} className="px-3 py-2 border-y border-slate-200 sticky left-0 z-10 bg-slate-200/50 backdrop-blur-sm"><div className="flex items-center gap-2">{groupBy === 'Category' ? <Layers size={14} /> : <BuildingIcon size={14} />}{groupKey} ({rows.length})</div></td>
-                                </tr>
-                                {rows.map((row, idx) => {
-                                    const rowTotalBudget = row.monthlyValues.reduce((sum: number, v: any) => sum + v.amount, 0);
-                                    const actualsForRow = actualsMap[row.id] || Array(12).fill(0);
-                                    const rowTotalActual = actualsForRow.reduce((a: number, b: number) => a + b, 0);
-
-                                    return (
-                                        <tr key={`${row.id}_${idx}`} className="hover:bg-blue-50/30 group transition-colors">
-                                            <td className="px-3 py-2 border-r border-slate-100 sticky left-0 bg-white group-hover:bg-blue-50/30 z-10 font-bold text-slate-700 truncate max-w-[180px]" title={row.name}>
-                                                {row.name}
-                                            </td>
-                                            <td className="px-2 py-2 border-r border-slate-100 text-slate-600 truncate max-w-[100px]" title={row.unitNames}>
-                                                {row.unitNames}
-                                            </td>
-                                            <td className="px-2 py-2 border-r border-slate-100 text-right text-slate-600">
-                                                {row.area}
-                                            </td>
-                                            <td className="px-2 py-2 border-r border-slate-100 text-right text-slate-500 text-[10px]">
-                                                {row.unitPrice}
-                                            </td>
-                                            <td className="px-2 py-2 border-r border-slate-100 text-center text-slate-500">{groupBy === 'Category' ? row.building : row.category.split(' ')[0]}</td>
-                                            {row.monthlyValues.map((val: any, mIdx: number) => {
-                                                const isAdjusted = budgetAdjustments.some(a => a.tenantId === row.id && ((a.originalYear === detailYear && a.originalMonth === mIdx) || (a.adjustedYear === detailYear && a.adjustedMonth === mIdx)));
-                                                const isShifted = budgetAssumptions.some(a => a.targetId === row.id && a.paymentShift?.isActive && ((a.paymentShift.fromYear === detailYear && a.paymentShift.fromMonth === mIdx) || (a.paymentShift.toYear === detailYear && a.paymentShift.toMonth === mIdx)));
-
-                                                if (viewMode === 'Execution') {
-                                                    const actualVal = actualsForRow[mIdx] || 0;
-                                                    const budgetVal = val.amount;
-                                                    let cellClass = 'text-slate-300';
-                                                    if (actualVal > 0) {
-                                                        if (actualVal >= budgetVal) cellClass = 'text-emerald-600 font-medium';
-                                                        else cellClass = 'text-amber-600';
-                                                    } else if (budgetVal > 0) {
-                                                        const isPast = new Date() > new Date(detailYear, mIdx + 1, 0);
-                                                        if (isPast) cellClass = 'text-rose-400'; 
-                                                    }
-                                                    return <td key={mIdx} className={`px-2 py-2 border-r border-slate-100 text-right ${cellClass}`} title={`预算: ${budgetVal.toLocaleString()}`}>{actualVal > 0 ? actualVal.toLocaleString() : '-'}</td>;
-                                                } 
-                                                
-                                                return (
-                                                    <td key={mIdx} className={`px-2 py-2 border-r border-slate-100 text-right relative group/cell ${val.amount > 0 ? 'text-slate-700 font-medium' : 'text-slate-300'} ${val.status === 'Vacant' ? 'bg-slate-50/50' : ''} ${isAdjusted || isShifted ? 'bg-yellow-50/50' : ''}`}>
-                                                        {val.amount > 0 ? val.amount.toLocaleString() : '-'}
-                                                        {val.status === 'RentFree' && <div className="absolute top-0 right-0 w-2 h-2 bg-emerald-400 rounded-bl-full" title="免租期"></div>}
-                                                        {val.status === 'Vacant' && <div className="absolute top-0 left-0 w-full h-full bg-slate-100/30 pointer-events-none"></div>}
-                                                        {val.amount > 0 && <button onClick={() => openAdjModal(row, mIdx, val.amount)} className="absolute inset-0 flex items-center justify-center bg-white/90 opacity-0 group-hover/cell:opacity-100 transition-opacity z-20" title="调整此笔账单"><ArrowRight size={14} className="text-blue-600" /></button>}
-                                                    </td>
-                                                );
-                                            })}
-                                            <td className="px-3 py-2 font-bold text-slate-800 text-right bg-blue-50/30">{viewMode === 'Execution' ? rowTotalActual.toLocaleString() : rowTotalBudget.toLocaleString()}</td>
-                                        </tr>
-                                    );
-                                })}
-                                {viewMode !== 'Execution' && (
-                                    <tr className="bg-slate-100/80 font-semibold text-slate-600 text-[10px]">
-                                        <td className="px-3 py-2 border-r border-slate-200 sticky left-0 bg-slate-100/80 z-10 text-right" colSpan={5}>{groupKey} 小计 (预算)</td>
-                                        {groupTotals.map((t, i) => <td key={i} className="px-2 py-2 border-r border-slate-200 text-right">{t > 0 ? t.toLocaleString() : '-'}</td>)}
-                                        <td className="px-3 py-2 text-right bg-blue-100/30">{groupSum.toLocaleString()}</td>
-                                    </tr>
-                                )}
-                            </React.Fragment>
-                        );
-                    })}
-                    <tr className="bg-slate-800 font-bold text-white sticky bottom-0 z-20 shadow-[0_-2px_10px_rgba(0,0,0,0.1)]">
-                        <td className="px-3 py-3 border-r border-slate-600 sticky left-0 bg-slate-800 z-30" colSpan={5}>{viewMode === 'Execution' ? '实际回款总计' : '预算总合计'}</td>
-                        {viewMode === 'Execution' 
-                            ? actualColumnTotals.map((total, i) => <td key={i} className="px-2 py-3 border-r border-slate-600 text-right text-emerald-300">{total.toLocaleString()}</td>)
-                            : budgetColumnTotals.map((total, i) => <td key={i} className="px-2 py-3 border-r border-slate-600 text-right">{total.toLocaleString()}</td>)
-                        }
-                        <td className="px-3 py-3 text-right bg-blue-600">{viewMode === 'Execution' ? actualColumnTotals.reduce((a,b)=>a+b,0).toLocaleString() : grandTotal.toLocaleString()}</td>
-                    </tr>
-                </tbody>
-            </table>
-        </div>
-        <div className="p-2 bg-slate-50 border-t border-slate-200 text-xs text-slate-500 flex justify-between px-4 flex-shrink-0">
-             <div className="flex gap-4">
-                 {viewMode === 'Execution' ? (
-                     <>
-                        <span className="flex items-center gap-1 text-emerald-600 font-medium"><div className="w-2 h-2 bg-emerald-500 rounded-full"></div> 达成预算</span>
-                        <span className="flex items-center gap-1 text-amber-600"><div className="w-2 h-2 bg-amber-500 rounded-full"></div> 未达标</span>
-                        <span className="flex items-center gap-1 text-rose-400"><div className="w-2 h-2 bg-rose-400 rounded-full"></div> 逾期/缺失</span>
-                     </>
-                 ) : (
-                     <>
-                        <span className="flex items-center gap-1"><div className="w-2 h-2 bg-emerald-400 rounded-full"></div> 免租期</span>
-                        <span className="flex items-center gap-1"><div className="w-2 h-2 bg-slate-200 rounded"></div> 空置期</span>
-                        <span className="flex items-center gap-1"><div className="w-2 h-2 bg-yellow-100 rounded border border-yellow-200"></div> 已调整/挪动</span>
-                     </>
-                 )}
+                <p className="text-sm text-slate-500 mt-1">针对空置、到期及风险客户设定处置策略</p>
              </div>
-             <div>仅显示当前筛选年度 ({detailYear}) 数据</div>
-        </div>
-    </div>
+             <div className="flex bg-white rounded-lg border border-slate-200 p-1 shadow-sm">
+                 {(['Vacancy', 'Renewal', 'Risk'] as const).map(tab => (
+                     <button
+                        key={tab}
+                        onClick={() => setActiveTab(tab)}
+                        className={`px-4 py-2 rounded-md text-sm font-medium transition-all ${activeTab === tab ? 'bg-blue-600 text-white shadow' : 'text-slate-600 hover:bg-slate-50'}`}
+                     >
+                        {tab === 'Vacancy' ? '空置去化' : tab === 'Renewal' ? '到期续约' : '风险预警'}
+                     </button>
+                 ))}
+             </div>
+         </div>
+         
+         <div className="flex-1 overflow-y-auto p-6 bg-slate-50/50">
+             <BudgetImpactSummary 
+                budgetAssumptions={budgetAssumptions} 
+                detailYear={detailYear} 
+                tenants={tenants} 
+                vacantUnits={vacantUnits}
+             />
+
+             {activeTab === 'Vacancy' && (
+                 <div className="space-y-4">
+                     {vacantUnits.map(unit => {
+                         const assumption = getAssumption(unit.unitId, 'Vacancy', `${unit.buildingName} ${unit.unitName}`);
+                         return (
+                             <div key={unit.unitId} className="bg-white p-4 rounded-lg border border-slate-200 shadow-sm flex flex-wrap gap-4 items-center">
+                                 <div className="w-48">
+                                     <div className="font-bold text-slate-700">{unit.buildingName} {unit.unitName}</div>
+                                     <div className="text-xs text-slate-500">{unit.area} ㎡ | 空置</div>
+                                 </div>
+                                 <div className="flex items-center gap-2 bg-slate-50 p-2 rounded border border-slate-200">
+                                     <label className="text-xs text-slate-500">预计签约</label>
+                                     <input type="date" className="border rounded px-2 py-1 text-sm w-32" value={assumption.projectedSignDate} onChange={e => updateAssumption({...assumption, projectedSignDate: e.target.value})} />
+                                 </div>
+                                 <div className="flex items-center gap-2 bg-slate-50 p-2 rounded border border-slate-200">
+                                     <label className="text-xs text-slate-500">预估单价</label>
+                                     <input type="number" step="0.1" className="border rounded px-2 py-1 text-sm w-20" value={assumption.projectedUnitPrice} onChange={e => updateAssumption({...assumption, projectedUnitPrice: Number(e.target.value)})} />
+                                 </div>
+                                 <div className="flex items-center gap-2 bg-slate-50 p-2 rounded border border-slate-200">
+                                     <label className="text-xs text-slate-500">免租(月)</label>
+                                     <input type="number" className="border rounded px-2 py-1 text-sm w-16" value={assumption.projectedRentFreeMonths} onChange={e => updateAssumption({...assumption, projectedRentFreeMonths: Number(e.target.value)})} />
+                                 </div>
+                             </div>
+                         );
+                     })}
+                     {vacantUnits.length === 0 && <div className="text-center p-8 text-slate-400">暂无空置单元</div>}
+                 </div>
+             )}
+
+             {activeTab === 'Renewal' && (
+                 <div className="space-y-4">
+                     {expiringTenants.map(tenant => {
+                         const assumption = getAssumption(tenant.id, 'Renewal', tenant.name);
+                         const isRenew = assumption.strategy === 'Renewal';
+                         return (
+                             <div key={tenant.id} className="bg-white p-4 rounded-lg border border-slate-200 shadow-sm flex flex-wrap gap-4 items-center relative overflow-hidden">
+                                 <div className={`absolute left-0 top-0 bottom-0 w-1 ${isRenew ? 'bg-blue-500' : 'bg-orange-500'}`}></div>
+                                 <div className="w-48">
+                                     <div className="font-bold text-slate-700 truncate" title={tenant.name}>{tenant.name}</div>
+                                     <div className="text-xs text-slate-500">到期: {tenant.leaseEnd} | {tenant.totalArea}㎡</div>
+                                 </div>
+                                 <div className="flex flex-col gap-1">
+                                     <label className="text-xs text-slate-500">策略</label>
+                                     <select className="border rounded px-2 py-1 text-sm bg-white" value={assumption.strategy} onChange={e => updateAssumption({...assumption, strategy: e.target.value as any})}>
+                                         <option value="Renewal">续签 (Renewal)</option>
+                                         <option value="ReLease">到期退租招商 (Re-lease)</option>
+                                     </select>
+                                 </div>
+                                 {isRenew ? (
+                                    <>
+                                        <div className="flex flex-col gap-1">
+                                            <label className="text-xs text-slate-500">续签单价</label>
+                                            <input type="number" step="0.1" className="border rounded px-2 py-1 text-sm w-20" value={assumption.projectedUnitPrice} onChange={e => updateAssumption({...assumption, projectedUnitPrice: Number(e.target.value)})} />
+                                        </div>
+                                        <div className="flex flex-col gap-1">
+                                            <label className="text-xs text-slate-500">免租(月)</label>
+                                            <input type="number" className="border rounded px-2 py-1 text-sm w-16" value={assumption.projectedRentFreeMonths} onChange={e => updateAssumption({...assumption, projectedRentFreeMonths: Number(e.target.value)})} />
+                                        </div>
+                                    </>
+                                 ) : (
+                                    <>
+                                        <div className="flex flex-col gap-1">
+                                            <label className="text-xs text-slate-500">空置期(月)</label>
+                                            <input type="number" className="border rounded px-2 py-1 text-sm w-16" value={assumption.vacancyGapMonths} onChange={e => updateAssumption({...assumption, vacancyGapMonths: Number(e.target.value)})} />
+                                        </div>
+                                        <div className="flex flex-col gap-1">
+                                            <label className="text-xs text-slate-500">新签单价</label>
+                                            <input type="number" step="0.1" className="border rounded px-2 py-1 text-sm w-20" value={assumption.projectedUnitPrice} onChange={e => updateAssumption({...assumption, projectedUnitPrice: Number(e.target.value)})} />
+                                        </div>
+                                    </>
+                                 )}
+                             </div>
+                         );
+                     })}
+                     {expiringTenants.length === 0 && <div className="text-center p-8 text-slate-400">明年暂无到期客户</div>}
+                 </div>
+             )}
+
+             {activeTab === 'Risk' && (
+                 <div className="space-y-4">
+                     {riskTenants.map(tenant => {
+                         const assumption = getAssumption(tenant.id, 'RiskTermination', tenant.name);
+                         return (
+                             <div key={tenant.id} className="bg-white p-4 rounded-lg border border-red-200 shadow-sm flex flex-wrap gap-4 items-center relative">
+                                 <div className="absolute left-0 top-0 bottom-0 w-1 bg-red-500"></div>
+                                 <div className="w-48">
+                                     <div className="font-bold text-slate-700 truncate" title={tenant.name}>{tenant.name}</div>
+                                     <div className="text-xs text-red-500 font-medium">⚠️ 高风险预警</div>
+                                 </div>
+                                 <div className="flex flex-col gap-1">
+                                     <label className="text-xs text-slate-500">预计退租日期</label>
+                                     <input type="date" className="border rounded px-2 py-1 text-sm" value={assumption.projectedTerminationDate || ''} onChange={e => updateAssumption({...assumption, projectedTerminationDate: e.target.value})} />
+                                 </div>
+                                 <div className="flex flex-col gap-1">
+                                     <label className="text-xs text-slate-500">空置期(月)</label>
+                                     <input type="number" className="border rounded px-2 py-1 text-sm w-16" value={assumption.vacancyGapMonths} onChange={e => updateAssumption({...assumption, vacancyGapMonths: Number(e.target.value)})} />
+                                 </div>
+                                 <div className="flex flex-col gap-1">
+                                     <label className="text-xs text-slate-500">新签单价</label>
+                                     <input type="number" step="0.1" className="border rounded px-2 py-1 text-sm w-20" value={assumption.projectedUnitPrice} onChange={e => updateAssumption({...assumption, projectedUnitPrice: Number(e.target.value)})} />
+                                 </div>
+                             </div>
+                         );
+                     })}
+                     {riskTenants.length === 0 && <div className="text-center p-8 text-slate-400">暂无高风险客户</div>}
+                 </div>
+             )}
+         </div>
+      </div>
   );
 
   return (
-    <div className={`space-y-6 ${isFullScreen ? 'fixed inset-0 z-50 bg-white p-6 flex flex-col h-screen' : ''}`}>
-       {/* New Scenario Toolbar */}
+    <div className={`space-y-6 ${isFullScreen ? 'fixed inset-0 z-50 bg-white p-6 flex flex-col h-screen overflow-auto' : ''}`}>
+       {/* Scenario Toolbar */}
        <div className="flex flex-wrap items-center justify-between gap-4 bg-slate-50 border border-slate-200 p-3 rounded-lg flex-shrink-0">
            <div className="flex items-center gap-3 flex-1 min-w-[200px]">
                <div className="flex items-center gap-2 text-sm font-medium text-slate-700">
                    <LayoutList size={16} /> 预算方案:
                </div>
                
-               {isRenaming && activeScenarioId !== 'current' ? (
-                   <div className="flex items-center gap-1 animate-in zoom-in-50 duration-200">
-                       <input 
-                           type="text" 
-                           className="bg-white border border-blue-400 rounded px-2 py-1.5 text-sm min-w-[200px] outline-none shadow-sm"
-                           value={tempScenarioName}
-                           onChange={e => setTempScenarioName(e.target.value)}
-                           autoFocus
-                           onBlur={saveRenaming}
-                           onKeyDown={(e) => e.key === 'Enter' && saveRenaming()}
-                       />
-                       <button onClick={saveRenaming} className="p-1.5 bg-blue-500 text-white rounded hover:bg-blue-600"><Check size={14}/></button>
-                   </div>
-               ) : (
-                   <div className="flex items-center gap-2">
-                       <select 
-                           value={activeScenarioId} 
-                           onChange={e => setActiveScenarioId(e.target.value)} 
-                           className="bg-white border border-slate-300 rounded px-3 py-1.5 text-sm min-w-[200px] outline-none focus:ring-2 focus:ring-blue-200 cursor-pointer"
-                       >
-                           <option value="current">🟡 当前实时生效方案 (Live)</option>
-                           {scenarios.map(s => (
-                               <option key={s.id} value={s.id}>
-                                   {s.name} {s.isActive ? '(✅生效中)' : ''}
-                               </option>
-                           ))}
-                       </select>
-                       
-                       {activeScenarioId !== 'current' && (
-                           <button onClick={startRenaming} className="p-1.5 text-slate-400 hover:text-blue-600 hover:bg-slate-100 rounded transition-colors" title="重命名方案">
-                               <Edit3 size={14} />
+               <div className="flex items-center gap-2">
+                   <select 
+                       value={activeScenarioId} 
+                       onChange={e => setActiveScenarioId(e.target.value)} 
+                       className="bg-white border border-slate-300 rounded px-3 py-1.5 text-sm min-w-[200px] outline-none focus:ring-2 focus:ring-blue-200 cursor-pointer shadow-sm"
+                   >
+                       <option value="current">🟡 当前实时生效方案 (Live)</option>
+                       {scenarios.map(s => (
+                           <option key={s.id} value={s.id}>
+                               {s.name} {s.isActive ? '(✅生效中)' : ''}
+                           </option>
+                       ))}
+                   </select>
+                   
+                   {activeScenarioId !== 'current' && (
+                       <div className="flex items-center gap-1">
+                           {isRenaming ? (
+                               <div className="flex items-center bg-white border border-blue-300 rounded overflow-hidden">
+                                   <input 
+                                     type="text" 
+                                     value={tempScenarioName}
+                                     onChange={e => setTempScenarioName(e.target.value)}
+                                     className="px-2 py-1 text-xs outline-none w-32"
+                                     autoFocus
+                                   />
+                                   <button onClick={saveRenaming} className="p-1 text-green-600 hover:bg-green-50"><Check size={12}/></button>
+                                   <button onClick={() => setIsRenaming(false)} className="p-1 text-red-500 hover:bg-red-50"><X size={12}/></button>
+                               </div>
+                           ) : (
+                               <button onClick={startRenaming} className="p-1.5 text-slate-400 hover:text-blue-600 rounded hover:bg-slate-200" title="重命名">
+                                   <Edit3 size={14} />
+                               </button>
+                           )}
+                           <button onClick={() => handleDeleteScenario(activeScenarioId)} className="p-1.5 text-slate-400 hover:text-red-600 rounded hover:bg-slate-200" title="删除方案">
+                               <Trash2 size={14} />
                            </button>
-                       )}
-                   </div>
-               )}
-
-               <button onClick={() => setShowScenarioModal(true)} className="p-1.5 text-blue-600 bg-blue-50 rounded hover:bg-blue-100 transition-colors" title="新建方案"><Plus size={16}/></button>
-               {activeScenarioId !== 'current' && (
-                   <button onClick={() => handleDeleteScenario(activeScenarioId)} className="p-1.5 text-rose-600 bg-rose-50 rounded hover:bg-rose-100 transition-colors" title="删除方案"><Trash2 size={16}/></button>
-               )}
+                       </div>
+                   )}
+                   
+                   <button onClick={() => setShowScenarioModal(true)} className="p-1.5 bg-blue-50 text-blue-600 rounded hover:bg-blue-100" title="新建方案">
+                       <Plus size={16} />
+                   </button>
+               </div>
            </div>
-           
-           <div className="flex gap-2 items-center">
-               {activeScenarioId !== 'current' ? (
-                   <div className="flex items-center mr-4">
-                       <label className="flex items-center gap-2 cursor-pointer bg-white border border-slate-200 px-3 py-1.5 rounded-lg hover:border-emerald-300 hover:bg-emerald-50 transition-all select-none shadow-sm group">
-                           <div className="relative flex items-center">
-                               <input 
-                                   type="checkbox" 
-                                   className="peer sr-only"
-                                   checked={scenarios.find(s => s.id === activeScenarioId)?.isActive || false}
-                                   onChange={() => handleActivateCurrentScenario()}
-                               />
-                               <div className="w-4 h-4 border-2 border-slate-300 rounded peer-checked:bg-emerald-500 peer-checked:border-emerald-500 transition-colors"></div>
-                               <Check size={12} className="absolute left-[2px] top-[2px] text-white opacity-0 peer-checked:opacity-100 transition-opacity pointer-events-none" />
-                           </div>
-                           <span className="text-sm font-medium text-slate-600 group-hover:text-emerald-700">
-                               设为生效方案 (计入系统运算)
-                           </span>
-                       </label>
-                   </div>
-               ) : (
-                   <span className="text-xs text-slate-400 flex items-center px-2">正在编辑主数据 (系统实时运算)</span>
+
+           <div className="flex items-center gap-3">
+               {/* View Toggles */}
+               <div className="flex bg-white rounded-lg border border-slate-200 p-1 shadow-sm">
+                   {(['Settings', 'Monthly', 'Execution'] as const).map(mode => (
+                       <button
+                           key={mode}
+                           onClick={() => setViewMode(mode)}
+                           className={`px-3 py-1.5 rounded text-xs font-medium transition-all flex items-center gap-1 ${viewMode === mode ? 'bg-slate-800 text-white shadow' : 'text-slate-600 hover:bg-slate-100'}`}
+                       >
+                           {mode === 'Settings' && <Calculator size={14} />}
+                           {mode === 'Monthly' && <Table size={14} />}
+                           {mode === 'Execution' && <Activity size={14} />}
+                           {mode === 'Settings' ? '假设设定' : mode === 'Monthly' ? '预算表' : '执行跟踪'}
+                       </button>
+                   ))}
+               </div>
+
+               <div className="h-6 w-px bg-slate-300 mx-1"></div>
+
+               {/* Action Buttons */}
+               <button 
+                  onClick={confirmCloudSave} // Using confirm directly for now as simple trigger, proper modal below
+                  disabled={activeScenarioId === 'current' && !scenarios.find(s=>s.isActive)} // Always enable save
+                  onClick={() => setShowCloudModal(true)}
+                  className="flex items-center gap-1 px-3 py-1.5 bg-white border border-slate-300 text-slate-700 rounded-lg text-xs font-medium hover:bg-slate-50 shadow-sm"
+               >
+                  <CloudUpload size={14} /> 云端保存
+               </button>
+
+               {activeScenarioId !== 'current' && !scenarios.find(s => s.id === activeScenarioId)?.isActive && (
+                   <button 
+                      onClick={handleActivateCurrentScenario}
+                      className="flex items-center gap-1 px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-xs font-bold hover:bg-emerald-700 shadow-sm animate-pulse"
+                   >
+                      <Play size={14} /> 应用此方案
+                   </button>
                )}
-               
-               <div className="h-8 w-px bg-slate-200 mx-2 hidden md:block"></div>
-               
-               <button onClick={handleExportScenario} className="flex items-center gap-1 px-3 py-1.5 bg-white border border-slate-200 text-slate-600 rounded text-sm hover:bg-slate-50">
-                   <Download size={14} /> 导出方案
-               </button>
-               <button onClick={() => setShowCloudModal(true)} className="flex items-center gap-1 px-3 py-1.5 bg-sky-50 text-sky-600 border border-sky-200 rounded text-sm hover:bg-sky-100">
-                   <CloudUpload size={14} /> 云端保存 (预算专版)
-               </button>
            </div>
        </div>
 
-       {activeScenarioId !== 'current' && (
-           <div className="bg-amber-50 border border-amber-100 text-amber-800 px-4 py-2 rounded-md text-sm flex items-center gap-2">
-               <Info size={16} />
-               {scenarios.find(s => s.id === activeScenarioId)?.isActive 
-                   ? <span>当前方案<b>已生效</b>。您对此方案的修改将实时反映在系统各项报表中。</span>
-                   : <span>您正在预览/编辑<b>草稿方案</b>。此方案数据暂未计入系统运算，勾选上方"
+       {/* Main Content Area */}
+       <div className="flex-1 min-h-0">
+           {viewMode === 'Settings' && renderSettingsView()}
+           {(viewMode === 'Monthly' || viewMode === 'Execution') && renderDetailTable()}
+       </div>
+
+       {/* Modals */}
+       {showAdjModal && (
+           <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
+               <div className="bg-white rounded-xl shadow-xl w-full max-w-sm p-6 animate-in zoom-in-50 duration-200">
+                   <h3 className="text-lg font-bold text-slate-800 mb-4">调整/缓缴预算</h3>
+                   <div className="space-y-4">
+                       <div className="bg-slate-50 p-3 rounded text-sm text-slate-600">
+                           <p><strong>客户:</strong> {adjData?.tenantName}</p>
+                           <p><strong>原计划月份:</strong> {detailYear}年{adjData ? adjData.originalMonth + 1 : ''}月</p>
+                           <p><strong>金额:</strong> ¥{adjData?.amount.toLocaleString()}</p>
+                       </div>
+                       <div>
+                           <label className="block text-sm font-medium text-slate-700 mb-1">调整至 (年份)</label>
+                           <input type="number" className="w-full border rounded p-2" value={adjForm.targetYear} onChange={e => setAdjForm({...adjForm, targetYear: Number(e.target.value)})} />
+                       </div>
+                       <div>
+                           <label className="block text-sm font-medium text-slate-700 mb-1">调整至 (月份)</label>
+                           <select className="w-full border rounded p-2" value={adjForm.targetMonth} onChange={e => setAdjForm({...adjForm, targetMonth: Number(e.target.value)})}>
+                               {Array.from({length: 12}, (_, i) => <option key={i} value={i+1}>{i+1}月</option>)}
+                           </select>
+                       </div>
+                       <div>
+                           <label className="block text-sm font-medium text-slate-700 mb-1">调整原因</label>
+                           <input type="text" className="w-full border rounded p-2" value={adjForm.reason} onChange={e => setAdjForm({...adjForm, reason: e.target.value})} placeholder="例如: 客户申请缓缴" />
+                       </div>
+                       <div className="flex justify-end gap-2 pt-2">
+                           <button onClick={() => setShowAdjModal(false)} className="px-4 py-2 border rounded text-slate-600 hover:bg-slate-50">取消</button>
+                           <button onClick={saveAdjustment} className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">确认调整</button>
+                       </div>
+                   </div>
+               </div>
+           </div>
+       )}
+
+       {showScenarioModal && (
+           <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
+               <div className="bg-white rounded-xl shadow-xl w-full max-w-sm p-6 animate-in zoom-in-50 duration-200">
+                   <h3 className="text-lg font-bold text-slate-800 mb-4">新建预算方案</h3>
+                   <div className="space-y-4">
+                       <div>
+                           <label className="block text-sm font-medium text-slate-700 mb-1">方案名称</label>
+                           <input type="text" className="w-full border rounded p-2" value={newScenarioName} onChange={e => setNewScenarioName(e.target.value)} placeholder="例如: 2024激进版预算" autoFocus />
+                       </div>
+                       <div>
+                           <label className="block text-sm font-medium text-slate-700 mb-1">描述 (可选)</label>
+                           <textarea className="w-full border rounded p-2 text-sm" rows={3} value={newScenarioDesc} onChange={e => setNewScenarioDesc(e.target.value)} placeholder="备注此方案的关键假设..." />
+                       </div>
+                       <div className="flex items-center gap-2">
+                           <input type="checkbox" id="snapshot" checked={useSnapshot} onChange={e => setUseSnapshot(e.target.checked)} className="rounded text-blue-600" />
+                           <label htmlFor="snapshot" className="text-sm text-slate-600">保存当前租户与楼宇数据快照 (推荐)</label>
+                       </div>
+                       <p className="text-xs text-slate-400">勾选快照将锁定当前的租赁状态，使方案不受后续实际运营数据变化的影响，适合做静态测算。</p>
+                       <div className="flex justify-end gap-2 pt-2">
+                           <button onClick={() => setShowScenarioModal(false)} className="px-4 py-2 border rounded text-slate-600 hover:bg-slate-50">取消</button>
+                           <button onClick={handleCreateScenario} className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">创建</button>
+                       </div>
+                   </div>
+               </div>
+           </div>
+       )}
+
+       {showCloudModal && (
+           <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
+               <div className="bg-white rounded-xl shadow-xl w-full max-w-sm p-6 animate-in zoom-in-50 duration-200">
+                   <h3 className="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2"><CloudUpload size={20}/> 备份至云端</h3>
+                   <div className="space-y-4">
+                       <div className="bg-blue-50 p-3 rounded text-sm text-blue-800">
+                           即将保存: <strong>{activeScenarioId === 'current' ? '当前生效方案 (Live)' : scenarios.find(s=>s.id===activeScenarioId)?.name}</strong>
+                       </div>
+                       <div>
+                           <label className="block text-sm font-medium text-slate-700 mb-1">操作人员姓名 <span className="text-red-500">*</span></label>
+                           <input type="text" className="w-full border rounded p-2" value={operatorName} onChange={e => setOperatorName(e.target.value)} placeholder="请输入您的姓名" />
+                       </div>
+                       <div className="flex justify-end gap-2 pt-2">
+                           <button onClick={() => setShowCloudModal(false)} className="px-4 py-2 border rounded text-slate-600 hover:bg-slate-50">取消</button>
+                           <button onClick={confirmCloudSave} disabled={!operatorName.trim()} className="px-4 py-2 bg-emerald-600 text-white rounded hover:bg-emerald-700 disabled:opacity-50">确认上传</button>
+                       </div>
+                   </div>
+               </div>
+           </div>
+       )}
+    </div>
+  );
+};

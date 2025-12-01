@@ -105,28 +105,28 @@ export const searchTenantInsights = async (tenantName: string): Promise<TenantSe
     const prompt = `
       Search for key public events and details for the company "${tenantName}" on the web.
       I am specifically looking for:
-      1. Company founding date (to celebrate anniversaries). This is high priority.
+      1. Company founding date.
       2. The industry or sector the company belongs to (e.g., "Artificial Intelligence", "E-commerce", "Biotech").
       3. Major product launches or updates in the last 2 years.
-      4. Significant corporate news (funding, awards, strategic partnerships) in the last year.
+      4. Significant corporate news in the last year.
 
       Return the result as a raw JSON object. Do not wrap in markdown code blocks.
-      The JSON object must have this structure:
+      Structure:
       {
-        "foundingDate": "YYYY-MM-DD", // Or "YYYY-MM" if day is unknown. If not found, use null.
+        "foundingDate": "YYYY-MM-DD", 
         "industry": "String (Short industry name)",
         "moments": [
             {
-                "title": "Short headline",
+                "title": "Headline",
                 "date": "YYYY-MM-DD",
-                "description": "Brief summary",
+                "description": "Summary",
                 "type": "Anniversary" | "Product" | "News" | "Award" | "Other",
-                "sourceUrl": "URL found"
+                "sourceUrl": "URL"
             }
         ]
       }
       
-      If no info is found, return { "moments": [] }.
+      If no info is found, return empty fields.
     `;
 
     const response = await ai.models.generateContent({

@@ -7,6 +7,8 @@
 
 
 
+
+
 import React, { useState, useEffect } from 'react';
 import { LayoutDashboard, Building2, Users, PieChart, Settings, Bell, Search, Menu, Sparkles, UserCircle, Download, Upload, X, Check, Filter, Save, RotateCcw, Trash2, Calculator, Database, Lightbulb, Cloud, CloudCog, RefreshCw, AlertCircle, ExternalLink, Link, Info, Loader2, CheckCircle2, XCircle, History, FileClock, ChevronRight, ChevronDown, CloudUpload, LogOut, User, Calendar, ChevronLeft } from 'lucide-react';
 import { generateInitialData } from './services/mockData';
@@ -61,25 +63,28 @@ const generateBudgetedBills = (
     const terminationDate = tenant.terminationDate ? new Date(tenant.terminationDate) : null;
     const effectiveLeaseEnd = terminationDate && terminationDate < leaseEnd ? terminationDate : leaseEnd;
 
-    let dailyRent = 0;
-    if (tenant.unitPrice && tenant.totalArea) {
-        dailyRent = tenant.unitPrice * tenant.totalArea;
-    } else if (tenant.monthlyRent) {
-        dailyRent = (tenant.monthlyRent * 12) / 365;
+    // Use monthlyRent as base unit
+    let monthlyRent = tenant.monthlyRent || 0;
+    if (monthlyRent === 0 && tenant.unitPrice && tenant.totalArea) {
+        monthlyRent = (tenant.unitPrice * tenant.totalArea * 365) / 12;
     }
 
-    if (dailyRent === 0) return [];
+    if (monthlyRent === 0) return [];
 
     const existingAssumption = assumptions.find(a => a.targetId === tenant.id && a.targetType === 'Existing');
 
-    // Use flexible months if available, otherwise fallback to enum mapping
-    const regularCycleMonths = tenant.paymentCycleMonths 
-        ? tenant.paymentCycleMonths 
-        : (tenant.paymentCycle === 'Quarterly' ? 3 : tenant.paymentCycle === 'SemiAnnual' ? 6 : tenant.paymentCycle === 'Annual' ? 12 : 1);
-        
+    // Use paymentCycleMonths, default to 3 if missing
+    const regularCycleMonths = tenant.paymentCycleMonths || (tenant.paymentCycle === 'Monthly' ? 1 : 3);
     const firstCycleMonths = tenant.firstPaymentMonths && tenant.firstPaymentMonths > 0 ? tenant.firstPaymentMonths : regularCycleMonths;
 
+    // Logic: Billing Date is 1 month prior to coverage start
     let currentBillDate = tenant.firstPaymentDate ? new Date(tenant.firstPaymentDate) : new Date(leaseStart);
+    if (!tenant.firstPaymentDate) {
+        // Default: 1 month before lease start
+        currentBillDate = new Date(leaseStart);
+        currentBillDate.setMonth(currentBillDate.getMonth() - 1);
+    }
+
     let coverageStart = new Date(leaseStart);
     let isFirstCycle = true;
     let safetyCounter = 0;
@@ -94,34 +99,50 @@ const generateBudgetedBills = (
         const coverageEnd = new Date(coverageStart);
         coverageEnd.setMonth(coverageEnd.getMonth() + durationMonths);
         coverageEnd.setDate(coverageEnd.getDate() - 1);
+        
         const effectiveCoverageEnd = coverageEnd > effectiveLeaseEnd ? effectiveLeaseEnd : coverageEnd;
 
-        const totalCycleDays = getDaysDiff(coverageStart, effectiveCoverageEnd);
-        let freeDaysInCycle = 0;
+        // Calculate Rent Free Deduction
+        // Formula: (MonthlyRent / 30) * FreeDays
+        let freeDays = 0;
         if (tenant.rentFreePeriods) {
             tenant.rentFreePeriods.forEach(rf => {
                 const rfStart = new Date(rf.start);
                 const rfEnd = new Date(rf.end);
-                freeDaysInCycle += getOverlapDays(coverageStart, effectiveCoverageEnd, rfStart, rfEnd);
+                freeDays += getOverlapDays(coverageStart, effectiveCoverageEnd, rfStart, rfEnd);
             });
         }
-        const billableDays = Math.max(0, totalCycleDays - freeDaysInCycle);
         
-        let currentDailyRent = dailyRent;
+        // Handle Price Adjustment mid-cycle
+        let currentMonthlyRent = monthlyRent;
         if (existingAssumption?.priceAdjustment) {
             const pa = existingAssumption.priceAdjustment;
-            if (new Date(pa.startDate) <= coverageStart) {
-                if (!pa.endDate || new Date(pa.endDate) >= effectiveCoverageEnd) {
-                    currentDailyRent = pa.newUnitPrice * tenant.totalArea;
-                }
+            if (new Date(pa.startDate) <= effectiveCoverageEnd) {
+                // If adjustment applies, calculate new monthly rent
+                currentMonthlyRent = (pa.newUnitPrice * tenant.totalArea * 365) / 12;
             }
         }
 
-        let amount = billableDays * currentDailyRent;
+        // Calculate Gross Amount
+        // Full cycle: MonthlyRent * Months
+        // Partial: Pro-rate by day
+        const fullCycleDays = getDaysDiff(coverageStart, coverageEnd);
+        const actualDays = getDaysDiff(coverageStart, effectiveCoverageEnd);
+        
+        let grossAmount = 0;
+        if (actualDays >= fullCycleDays - 5) {
+             grossAmount = currentMonthlyRent * durationMonths;
+        } else {
+             grossAmount = (currentMonthlyRent * 12 / 365) * actualDays;
+        }
+
+        // Deduct Rent Free
+        const deduction = (currentMonthlyRent / 30) * freeDays;
+        let finalAmount = Math.max(0, grossAmount - deduction);
 
         let finalBillDate = new Date(currentBillDate);
-        let finalAmount = amount;
 
+        // Adjustments (Shift & Manual)
         if (existingAssumption?.paymentShift?.isActive) {
              const ps = existingAssumption.paymentShift;
              const billYear = finalBillDate.getFullYear();
@@ -138,7 +159,7 @@ const generateBudgetedBills = (
                  
                  bills.push({
                      date: shiftedDate,
-                     amount: ps.amount,
+                     amount: Math.round(ps.amount),
                      originalDate: new Date(currentBillDate)
                  });
              }
@@ -157,7 +178,7 @@ const generateBudgetedBills = (
             const targetDate = new Date(adjOut.adjustedYear, adjOut.adjustedMonth, 1);
             bills.push({
                 date: targetDate,
-                amount: adjOut.amount,
+                amount: Math.round(adjOut.amount),
                 originalDate: new Date(currentBillDate)
             });
         }
@@ -165,13 +186,17 @@ const generateBudgetedBills = (
         if (finalAmount > 0) {
             bills.push({
                 date: finalBillDate,
-                amount: finalAmount
+                amount: Math.round(finalAmount)
             });
         }
 
         coverageStart = new Date(effectiveCoverageEnd);
         coverageStart.setDate(coverageStart.getDate() + 1);
-        currentBillDate = new Date(coverageStart); 
+        
+        // Next bill: 1 month prior to next coverage start
+        currentBillDate = new Date(coverageStart);
+        currentBillDate.setMonth(currentBillDate.getMonth() - 1);
+        
         isFirstCycle = false;
         
         if (coverageStart > loopLimitDate) break;
@@ -180,6 +205,7 @@ const generateBudgetedBills = (
     return bills;
 };
 
+// ... (calculateBudgetedReceivableInPeriod, SidebarItemProps kept same) ...
 const calculateBudgetedReceivableInPeriod = (
     tenants: Tenant[],
     periodStart: Date,
@@ -247,7 +273,7 @@ const SidebarItem: React.FC<SidebarItemProps> = ({ icon, label, isOpen, active, 
 const App: React.FC = () => {
   const [data, setData] = useState<DashboardData | null>(null);
   
-  // Initialize with embedded credentials
+  // ... (State initialization) ...
   const [cloudConfig, setCloudConfig] = useState<CloudConfig>({ 
       supabaseUrl: SUPABASE_URL, 
       supabaseKey: SUPABASE_KEY, 
@@ -365,6 +391,7 @@ const App: React.FC = () => {
       }
   }, [billingSelectedMonth]);
 
+  // ... (handleCloudConfigSave, fetchCloudHistory, etc. kept same) ...
   const handleCloudConfigSave = async () => {
       // Just save project ID, ignore URL/Key inputs as they are hidden/embedded
       setIsTestingCloud(true);
@@ -422,7 +449,6 @@ const App: React.FC = () => {
       }
   };
 
-  // Specific Cloud Save for Budget Scenario (Passes a different note prefix)
   const handleSaveBudgetToCloud = async (scenarioName: string, operator: string) => {
       if (!data) return;
       setIsSyncing(true);
@@ -477,6 +503,7 @@ const App: React.FC = () => {
       }
   };
 
+  // Direct Restore Function
   const handleRestoreCloudBackup = async (backupId: string) => {
       if (!window.confirm("⚠️ 警告：覆盖操作\n\n确定要将此历史备份恢复到当前系统吗？\n当前本地的所有数据将被此备份完全覆盖且无法撤销。\n\n恢复后页面将自动刷新。")) {
           return;
@@ -599,13 +626,13 @@ const App: React.FC = () => {
   };
 
   const recalculateMetrics = (currentData: DashboardData, year: number = selectedYear, quarter: 'All' | 'Q1' | 'Q2' | 'Q3' | 'Q4' = selectedQuarter) => {
+    // ... (same as before) ...
     const tenants = currentData.tenants || [];
     const buildings = currentData.buildings || [];
     const payments = currentData.payments || [];
     const assumptions = currentData.budgetAssumptions || [];
     const adjustments = currentData.budgetAdjustments || [];
 
-    // Load targets for the specific year from map, default if not found
     const yearlyTargetsMap = currentData.yearlyTargets || {};
     const yearTargets = yearlyTargetsMap[year] || { revenue: 0, occupancy: 0 };
 
@@ -621,7 +648,6 @@ const App: React.FC = () => {
         ...b,
         units: b.units.map(u => {
              if (u.isSelfUse) selfUseUnitIds.add(u.id);
-             // Ensure 'Expired' tenants don't occupy the unit in the visual grid
              const activeTenant = tenants.find(t => t.buildingId === b.id && t.unitIds.includes(u.id) && (t.status === 'Active' || t.status === 'Expiring' || t.status === 'Pending'));
              let newStatus = u.status;
              if (activeTenant) { newStatus = UnitStatus.Occupied; } 
@@ -636,7 +662,6 @@ const App: React.FC = () => {
     let leasedArea = 0;
     tenants.forEach(t => {
         const isSelfUse = t.unitIds.some(uid => selfUseUnitIds.has(uid));
-        // Don't count Expired/Terminated contracts in current Leased Area stats
         if (isSelfUse || t.status === 'Expired' || t.status === 'Terminated') return;
         const start = new Date(t.leaseStart);
         const end = new Date(t.leaseEnd);
@@ -665,10 +690,7 @@ const App: React.FC = () => {
     
     const newContractsCount = recentSignings.length;
     
-    // Calculate Current Year Trends
     const monthlyTrends = calculateTrends(tenants, payments, totalLeasableArea, selfUseUnitIds, year, quarter, assumptions, adjustments);
-    
-    // Calculate Previous Year Trends for YoY (Always Full Year for calculation simplicity in table)
     const prevYearMonthlyTrends = calculateTrends(tenants, payments, totalLeasableArea, selfUseUnitIds, year - 1, 'All', assumptions, adjustments);
 
     let billingYear = new Date().getFullYear();
@@ -683,7 +705,6 @@ const App: React.FC = () => {
     const currentMonthBilling: BillingDetail[] = [];
     tenants.forEach(t => {
         const isSelfUse = t.unitIds.some(uid => selfUseUnitIds.has(uid));
-        // Billing check also excludes Expired
         if (isSelfUse || t.status === 'Terminated' || t.status === 'Expired') return;
         const amountDue = calculateBudgetedReceivableInPeriod([t], billingMonthStart, billingMonthEnd, selfUseUnitIds, assumptions, adjustments);
         const amountPaid = payments.filter(p => p.tenantId === t.id && (p.type === 'Rent' || p.type === 'DepositToRent') && p.date.startsWith(billingPrefix)).reduce((sum, p) => sum + p.amount, 0);
@@ -700,7 +721,6 @@ const App: React.FC = () => {
     const parkingDetails: ParkingStatDetail[] = []; 
     let totalContractSpaces = 0; let totalActualSpaces = 0;
     tenants.forEach(t => {
-         // Expired contracts don't count towards current parking stats
          if (t.status === 'Expired' || t.status === 'Terminated') return;
          const contractCount = t.contractParkingSpaces !== undefined ? t.contractParkingSpaces : (t.parkingSpaces || 0);
          const actualCount = t.actualParkingSpaces !== undefined ? t.actualParkingSpaces : (t.parkingSpaces || 0);
@@ -720,8 +740,8 @@ const App: React.FC = () => {
         totalArea: totalLeasableArea, 
         leasedArea, 
         occupancyRate,
-        annualRevenueTarget: yearTargets.revenue, // Apply Year Target
-        annualOccupancyTarget: yearTargets.occupancy, // Apply Year Target
+        annualRevenueTarget: yearTargets.revenue, 
+        annualOccupancyTarget: yearTargets.occupancy, 
         annualRevenueCollected, 
         monthlyRevenueTarget, 
         monthlyRevenueCollected, 
@@ -765,6 +785,7 @@ const App: React.FC = () => {
       recalculateMetrics(mergedData);
   };
 
+  // ... (handleDeferPayment, budget scenario handlers, update helpers) ...
   const handleDeferPayment = (tenantId: string, year?: number, month?: number) => {
       if (!data) return;
       const tenant = data.tenants.find(t => t.id === tenantId);
@@ -786,13 +807,11 @@ const App: React.FC = () => {
       alert(`已申请缓缴！\n客户: ${tenant.name}\n金额: ¥${amountDue.toLocaleString()}\n已延期至: ${nextYear}年${nextMonth+1}月`);
   };
 
-  // BUDGET SCENARIO MANAGEMENT
   const updateBudgetScenarios = (newScenarios: BudgetScenario[]) => {
       if (!data) return;
       setData({...data, budgetScenarios: newScenarios});
   };
 
-  // New renaming handler
   const handleRenameScenario = (id: string, newName: string) => {
       if (!data || !data.budgetScenarios) return;
       const updated = data.budgetScenarios.map(s => s.id === id ? {...s, name: newName} : s);
@@ -801,15 +820,11 @@ const App: React.FC = () => {
 
   const handleActivateScenario = (scenario: BudgetScenario) => {
       if (!data) return;
-      
       const scenarioList = data.budgetScenarios || [];
       const updatedScenarios = scenarioList.map(s => ({
           ...s,
-          isActive: s.id === scenario.id // Ensure mutual exclusivity
+          isActive: s.id === scenario.id 
       }));
-
-      // Update Active Assumptions/Adjustments in main data
-      // Also update the scenarios list to reflect new active state
       recalculateMetrics({
           ...data,
           budgetScenarios: updatedScenarios,
@@ -831,12 +846,10 @@ const App: React.FC = () => {
       setIsTargetModalOpen(true); 
   };
   
-  // Save Targets for Specific Year
   const saveTargets = () => { 
       if (!data) return; 
       const newTargets = { ...data.yearlyTargets };
       newTargets[selectedYear] = { revenue: Number(targetForm.revenue), occupancy: Number(targetForm.occupancy) };
-      
       recalculateMetrics({ ...data, yearlyTargets: newTargets }); 
       setIsTargetModalOpen(false); 
   };
@@ -853,7 +866,6 @@ const App: React.FC = () => {
       }
   };
 
-  // Generate Multi-Year Comparison Data
   const annualComparisonData: AnnualComparisonData[] = React.useMemo(() => {
       if (!data) return [];
       const years = [selectedYear - 1, selectedYear, selectedYear + 1];
@@ -861,26 +873,10 @@ const App: React.FC = () => {
 
       years.forEach((y, idx) => {
           const targets = data.yearlyTargets?.[y] || { revenue: 0, occupancy: 0 };
-          
-          // Future Year Logic: Only show if it's November or December
-          const now = new Date();
-          const currentRealYear = now.getFullYear();
-          const currentRealMonth = now.getMonth() + 1; // 1-12
-          
-          if (y > currentRealYear) {
-              if (currentRealMonth < 11) return; // Hide future year if before November
-          }
-
-          let actualRevenue = 0;
-          let revenueYoY = null;
-          let occupancyYoY = null;
-
-          // Real actuals for past/current/future years (Future will be 0)
-          actualRevenue = data.payments
+          const actualRevenue = data.payments
               .filter(p => p.date.startsWith(y.toString()) && (p.type === 'Rent' || p.type === 'DepositToRent' || p.type === 'ParkingFee'))
               .reduce((sum, p) => sum + p.amount, 0);
           
-          // Calculate End of Year Occupancy Snapshot
           const yearEnd = new Date(y, 11, 31);
           let totalLeasable = 0;
           let leasedArea = 0;
@@ -897,33 +893,14 @@ const App: React.FC = () => {
           });
           const occupancyRate = totalLeasable > 0 ? parseFloat(((leasedArea / totalLeasable) * 100).toFixed(1)) : 0;
 
-          // YoY Logic
+          let revenueYoY = null;
+          let occupancyYoY = null;
+          
           if (idx > 0) {
               const prev = results[idx - 1];
-              
-              // Revenue YoY:
-              // If Current Year: Calculate YTD (Year-To-Date)
-              if (y === currentRealYear && prev) {
-                  // Calculate Prev Year YTD
-                  const prevYearPrefix = `${y-1}`;
-                  // We need to calculate prev year revenue ONLY up to current month
-                  const prevYearYTDRevenue = data.payments
-                      .filter(p => {
-                          if (!p.date.startsWith(prevYearPrefix)) return false;
-                          const month = parseInt(p.date.split('-')[1]);
-                          return month <= currentRealMonth && (p.type === 'Rent' || p.type === 'DepositToRent' || p.type === 'ParkingFee');
-                      })
-                      .reduce((sum, p) => sum + p.amount, 0);
-                  
-                  if (prevYearYTDRevenue > 0) {
-                      revenueYoY = ((actualRevenue - prevYearYTDRevenue) / prevYearYTDRevenue) * 100;
-                  }
-              } 
-              // Standard YoY for past years
-              else if (prev && prev.revenueActual > 0) {
+              if (prev && prev.revenueActual > 0) {
                   revenueYoY = ((actualRevenue - prev.revenueActual) / prev.revenueActual) * 100;
               }
-
               if (prev) {
                   occupancyYoY = occupancyRate - prev.occupancyRate;
               }
@@ -951,7 +928,6 @@ const App: React.FC = () => {
       
       {/* Light Theme Sidebar for PC */}
       <aside className={`fixed inset-y-0 left-0 z-30 bg-white border-r border-slate-200 transition-all duration-300 flex flex-col h-screen sticky top-0 shadow-xl ${isSidebarOpen ? 'w-64 translate-x-0' : 'w-64 -translate-x-full md:w-20 md:translate-x-0'}`}>
-        {/* ... Sidebar Content ... */}
         <div className="h-20 flex items-center justify-center border-b border-slate-100 bg-white z-10">
            {isSidebarOpen ? (
               <div className="flex items-center gap-2 animate-in fade-in duration-300">
@@ -967,7 +943,6 @@ const App: React.FC = () => {
            )}
         </div>
 
-        {/* Navigation Items */}
         <nav className="flex-1 py-6 px-0 space-y-1 overflow-y-auto scrollbar-hide">
           <SidebarItem icon={<LayoutDashboard size={20} />} label="工作台" isOpen={isSidebarOpen} active={activeTab === 'dashboard'} onClick={() => { setActiveTab('dashboard'); if(window.innerWidth < 768) setSidebarOpen(false); }} />
           <SidebarItem icon={<Building2 size={20} />} label="楼宇资管" isOpen={isSidebarOpen} active={activeTab === 'buildings'} onClick={() => { setActiveTab('buildings'); if(window.innerWidth < 768) setSidebarOpen(false); }} />
@@ -981,7 +956,7 @@ const App: React.FC = () => {
           <SidebarItem icon={<Settings size={20} />} label="系统与备份" isOpen={isSidebarOpen} active={activeTab === 'settings'} onClick={() => { setActiveTab('settings'); if(window.innerWidth < 768) setSidebarOpen(false); }} />
         </nav>
 
-        {/* User Profile Card */}
+        {/* ... User Profile ... */}
         <div className="p-4 border-t border-slate-100 bg-slate-50/50">
           <div className={`flex items-center gap-3 p-2 rounded-xl transition-colors cursor-pointer group ${!isSidebarOpen && 'justify-center'}`}>
             <div className="w-9 h-9 rounded-full bg-white border border-slate-200 flex items-center justify-center shadow-sm text-slate-400 group-hover:text-blue-500 transition-colors">
@@ -1010,6 +985,7 @@ const App: React.FC = () => {
       <main className="flex-1 transition-all duration-300 w-full overflow-hidden flex flex-col">
         {/* Header */}
         <header className="h-16 bg-white border-b border-slate-200 sticky top-0 z-10 px-4 md:px-6 flex items-center justify-between shadow-sm">
+          {/* ... Header Content ... */}
           <div className="flex items-center gap-4">
             <button onClick={() => setSidebarOpen(!isSidebarOpen)} className="p-2 hover:bg-slate-100 rounded-lg text-slate-600"><Menu size={20} /></button>
             <div className="flex flex-col"><h1 className="text-lg md:text-xl font-bold text-slate-800 truncate">{activeTab === 'dashboard' && '招商管理看板'}{activeTab === 'buildings' && '楼宇资产管理'}{activeTab === 'contracts' && '客户合同中心'}{activeTab === 'finance' && '财务收款报表'}{activeTab === 'budget' && '招商预算管理'}{activeTab === 'insights' && '客户关键时刻洞察'}{activeTab === 'settings' && '系统设置与数据备份'}</h1></div>
@@ -1039,13 +1015,12 @@ const App: React.FC = () => {
           </div>
         </header>
 
-        {/* Dynamic Dashboard Content */}
+        {/* ... Main Content ... */}
         <div className="p-4 md:p-8 max-w-7xl mx-auto w-full overflow-x-hidden">
           {activeTab === 'dashboard' && (
             <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+               {/* ... Dashboard Components ... */}
                <DashboardAlerts tenants={data.tenants} />
-               
-               {/* Global Year Selector for Dashboard */}
                <div className="flex items-center justify-between bg-white p-3 rounded-xl border border-slate-100 shadow-sm">
                    <div className="flex items-center gap-2">
                        <Calendar className="text-blue-500" size={20}/>
@@ -1099,7 +1074,6 @@ const App: React.FC = () => {
             </div>
           )}
 
-          {/* ... (Other Tabs Unchanged) ... */}
           {activeTab === 'buildings' && (
              <div className="animate-in fade-in zoom-in-50 duration-300">
                 <BuildingManager 
@@ -1147,7 +1121,6 @@ const App: React.FC = () => {
                   onUpdateAnalysis={updateBudgetAnalysis}
                   payments={data.payments}
                   
-                  // Scenario Management Props
                   scenarios={data.budgetScenarios || []}
                   onUpdateScenarios={updateBudgetScenarios}
                   onRenameScenario={handleRenameScenario}
@@ -1168,13 +1141,16 @@ const App: React.FC = () => {
 
           {activeTab === 'settings' && (
              <div className="animate-in fade-in zoom-in-50 duration-300 max-w-2xl mx-auto">
-                 {/* ... Settings Content Unchanged ... */}
+                 {/* ... Settings Content ... */}
                  <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+                     {/* ... Header ... */}
                      <div className="p-6 border-b border-slate-200">
                          <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2">
                              <Settings className="text-slate-400" /> 系统设置
                          </h2>
                      </div>
+                     
+                     {/* Cloud Status */}
                      <div className="p-6 border-b border-slate-200 bg-sky-50/30">
                          <div className="flex items-center gap-3 mb-4">
                              <div className="p-2 bg-white rounded-lg text-sky-600 shadow-sm border border-sky-100">
@@ -1195,6 +1171,7 @@ const App: React.FC = () => {
                                  </div>
                              </div>
                          </div>
+                         {/* ... Project ID Input ... */}
                          <div className="bg-white p-4 rounded-lg border border-slate-200">
                              <div>
                                  <label className="block text-xs font-medium text-slate-500 mb-1">项目标识 (Project ID)</label>
@@ -1211,6 +1188,8 @@ const App: React.FC = () => {
                              </div>
                          </div>
                      </div>
+
+                     {/* Cloud History & Restore */}
                      {isCloudConnected && (
                          <div className="p-6 border-b border-slate-200">
                              <div className="flex justify-between items-center mb-4">
@@ -1234,11 +1213,19 @@ const App: React.FC = () => {
                                                      <div className="text-xs text-slate-400 flex items-center gap-1"><FileClock size={10} /> {new Date(backup.created_at).toLocaleString()}</div>
                                                  </div>
                                                  <div className="flex gap-2">
-                                                     <button onClick={() => handleDownloadCloudBackup(backup.id, backup.note)} disabled={restoringId === backup.id} className="text-xs border border-slate-200 bg-white text-slate-600 px-2 py-1 rounded hover:border-blue-300 hover:text-blue-600 flex items-center gap-1 transition-colors">
-                                                         {restoringId === backup.id ? <Loader2 size={12} className="animate-spin"/> : <Download size={12}/>} 下载
-                                                     </button>
-                                                     <button onClick={() => handleRestoreCloudBackup(backup.id)} disabled={restoringId !== null} className="text-xs border border-orange-200 bg-orange-50 text-orange-700 px-2 py-1 rounded hover:bg-orange-100 hover:border-orange-300 flex items-center gap-1 transition-colors">
+                                                     <button 
+                                                        onClick={() => handleRestoreCloudBackup(backup.id)} 
+                                                        disabled={restoringId === backup.id} 
+                                                        className="text-xs border border-orange-200 bg-white text-orange-600 px-2 py-1 rounded hover:border-orange-300 hover:bg-orange-50 flex items-center gap-1"
+                                                     >
                                                          {restoringId === backup.id ? <Loader2 size={12} className="animate-spin"/> : <RotateCcw size={12}/>} 恢复
+                                                     </button>
+                                                     <button 
+                                                        onClick={() => handleDownloadCloudBackup(backup.id, backup.note)} 
+                                                        disabled={restoringId === backup.id} 
+                                                        className="text-xs border border-slate-200 bg-white text-slate-600 px-2 py-1 rounded hover:border-blue-300 hover:text-blue-600 flex items-center gap-1"
+                                                     >
+                                                         {restoringId === backup.id ? <Loader2 size={12} className="animate-spin"/> : <Download size={12}/>} 下载
                                                      </button>
                                                  </div>
                                              </div>
@@ -1248,6 +1235,8 @@ const App: React.FC = () => {
                              </div>
                          </div>
                      )}
+                     
+                     {/* Local Data Management */}
                      <div className="p-6 bg-slate-50/50">
                          <h3 className="font-bold text-slate-700 mb-4 flex items-center gap-2"><Database size={18} /> 本地数据管理</h3>
                          <div className="space-y-3">
@@ -1275,7 +1264,7 @@ const App: React.FC = () => {
                          </div>
                      </div>
                  </div>
-                 <div className="mt-8 text-center text-xs text-slate-400"><p>Kingdee Park Management System v2.3</p><p>© 2024 Kingdee. All rights reserved.</p></div>
+                 <div className="mt-8 text-center text-xs text-slate-400"><p>Kingdee Park Management System v2.4</p><p>© 2024 Kingdee. All rights reserved.</p></div>
              </div>
           )}
         </div>
@@ -1283,6 +1272,7 @@ const App: React.FC = () => {
 
       <AssistantPanel isOpen={isAssistantOpen} onClose={() => setAssistantOpen(false)} data={data} />
       
+      {/* Target Modal */}
       {isTargetModalOpen && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
               <div className="bg-white rounded-xl shadow-xl w-full max-w-sm p-6 animate-in zoom-in-50 duration-200">
