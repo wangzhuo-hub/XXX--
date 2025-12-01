@@ -49,7 +49,6 @@ export const TenantInsights: React.FC<TenantInsightsProps> = ({ tenants, onUpdat
                   updatedTenantsList[tenantIndex] = {
                       ...t,
                       keyMoments: result.moments,
-                      // Only update basic info if it was missing and AI found it
                       foundingDate: t.foundingDate || result.foundingDate || t.foundingDate,
                       industry: t.industry || result.industry || t.industry // Auto-fill Industry
                   };
@@ -247,15 +246,15 @@ export const TenantInsights: React.FC<TenantInsightsProps> = ({ tenants, onUpdat
                             <p className="font-medium text-emerald-600 text-sm md:text-base">{calculateParkDuration(selectedTenant.leaseStart)}</p>
                         </div>
                         <div>
-                            <p className="text-xs text-slate-400 mb-1 flex items-center gap-1"><Briefcase size={12}/> 所属行业</p>
-                            <p className="font-medium text-slate-700 text-sm md:text-base truncate" title={selectedTenant.industry}>{selectedTenant.industry || '未录入'}</p>
-                        </div>
-                        <div>
                             <p className="text-xs text-slate-400 mb-1 flex items-center gap-1"><User size={12}/> 法人/高管</p>
                             <div className="flex flex-col">
                                 <span className="font-medium text-slate-700 text-sm md:text-base">{selectedTenant.legalRepName || '未录入'}</span>
                                 {selectedTenant.legalRepBirthday && <span className="text-xs text-pink-500 flex items-center gap-0.5"><Cake size={10}/> {selectedTenant.legalRepBirthday}</span>}
                             </div>
+                        </div>
+                        <div>
+                            <p className="text-xs text-slate-400 mb-1 flex items-center gap-1"><Briefcase size={12}/> 所属行业</p>
+                            <p className="font-medium text-slate-700 text-sm md:text-base">{selectedTenant.industry || '未录入'}</p>
                         </div>
                     </div>
                 </div>

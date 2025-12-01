@@ -5,8 +5,6 @@
 
 
 
-
-
 import React, { useState, useEffect, useMemo } from 'react';
 import { Tenant, Building, ContractStatus, DepositStatus, RentFreePeriod, PaymentCycle, UnitStatus } from '../types';
 import { Search, Plus, FileText, Filter, XCircle, AlertTriangle, AlertCircle, Calendar, CheckSquare, Square, Car, Calculator, RotateCw, ShieldAlert, ChevronDown, ChevronRight, UserMinus, ChevronUp, History, Cake, Briefcase, BarChart3, TrendingDown, DollarSign, Edit2, X, Clock, Trash2, Users, Flag, User, Phone, Save, Link } from 'lucide-react';
@@ -57,13 +55,11 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
       try {
           const list = [];
           let coverStart = new Date(currentTenant.leaseStart);
-          // Default first pay date to lease start if empty
-          let billDate = currentTenant.firstPaymentDate ? new Date(currentTenant.firstPaymentDate) : new Date(currentTenant.leaseStart);
           
           const regularMonths = Number(currentTenant.paymentCycleMonths);
           const firstMonths = currentTenant.firstPaymentMonths ? Number(currentTenant.firstPaymentMonths) : regularMonths;
           
-          // Generate max 6 items (enough to see a year+ trend)
+          // Generate max 6 items
           for (let i = 0; i < 6; i++) {
               const duration = i === 0 ? firstMonths : regularMonths;
               
@@ -71,6 +67,15 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
               coverEnd.setMonth(coverEnd.getMonth() + duration);
               coverEnd.setDate(coverEnd.getDate() - 1);
               
+              // New Logic: Bill Date is 1 month prior to coverage start
+              let billDate = new Date(coverStart);
+              billDate.setMonth(billDate.getMonth() - 1);
+              
+              // For the very first payment, use explicit firstPaymentDate if provided, otherwise default to 1mo prior
+              if (i === 0 && currentTenant.firstPaymentDate) {
+                  billDate = new Date(currentTenant.firstPaymentDate);
+              }
+
               list.push({
                   date: billDate.toISOString().split('T')[0],
                   period: `${coverStart.toISOString().split('T')[0]} ~ ${coverEnd.toISOString().split('T')[0]}`
@@ -79,7 +84,6 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
               // Setup next
               coverStart = new Date(coverEnd);
               coverStart.setDate(coverStart.getDate() + 1);
-              billDate = new Date(coverStart); // Next bill defaults to start of period
           }
           return list;
       } catch (e) {
@@ -123,8 +127,6 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
     // Determine Root ID
     let finalRootId = currentTenant.rootId;
     if (renewingFromId && !finalRootId) {
-        // If renewing but no rootId exists on new object yet (should have been passed, but safety check)
-        // We might generate one now if the old one didn't have one
         const oldTenant = tenants.find(t => t.id === renewingFromId);
         if (oldTenant) finalRootId = oldTenant.rootId || oldTenant.id;
     }
@@ -132,15 +134,15 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
     const newTenant = {
       ...currentTenant,
       id: currentTenant.id || `t${Date.now()}`,
-      rootId: finalRootId, // Ensure rootId is set
+      rootId: finalRootId, 
       status: currentTenant.status || ContractStatus.Active,
       depositStatus: currentTenant.depositStatus || DepositStatus.Unpaid,
       rentFreePeriods: currentTenant.rentFreePeriods || [],
       unitIds: currentTenant.unitIds || [],
       totalArea: currentTenant.totalArea || 0,
       specialRequirements: currentTenant.specialRequirements || '',
-      paymentCycle: 'Quarterly', // Legacy compatibility
-      paymentCycleMonths: currentTenant.paymentCycleMonths || 3, // Default to 3 if not set
+      paymentCycle: 'Quarterly', // Legacy
+      paymentCycleMonths: currentTenant.paymentCycleMonths || 3, // Flexible
       firstPaymentDate: currentTenant.firstPaymentDate || currentTenant.leaseStart, 
       firstPaymentMonths: currentTenant.firstPaymentMonths || currentTenant.paymentCycleMonths || 3, 
       monthlyRent: currentTenant.monthlyRent || 0,
@@ -155,28 +157,25 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
       legalRepBirthday: currentTenant.legalRepBirthday,
       contactName: currentTenant.contactName,
       contactBirthday: currentTenant.contactBirthday,
-      industry: currentTenant.industry, // Save industry
+      industry: currentTenant.industry,
       parkingSpaces: undefined
     } as Tenant;
 
     let updatedTenants = [...tenants];
 
-    // If Renewing: Update the OLD contract status to Expired and ensure it has rootId
     if (renewingFromId) {
         updatedTenants = updatedTenants.map(t => {
             if (t.id === renewingFromId) {
                 return { 
                     ...t, 
-                    status: ContractStatus.Expired, // Mark old as Expired History
-                    rootId: finalRootId || t.id     // Ensure linking
+                    status: ContractStatus.Expired, 
+                    rootId: finalRootId || t.id     
                 };
             }
             return t;
         });
-        // Add new contract
         updatedTenants.push(newTenant);
     } 
-    // Normal Edit or New
     else if (currentTenant.id && tenants.some(t => t.id === currentTenant.id)) {
        updatedTenants = updatedTenants.map(t => t.id === currentTenant.id ? newTenant : t);
     } else {
@@ -195,13 +194,12 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
     const contractP = tenant.contractParkingSpaces !== undefined ? tenant.contractParkingSpaces : (tenant.parkingSpaces || 0);
     const actualP = tenant.actualParkingSpaces !== undefined ? tenant.actualParkingSpaces : (tenant.parkingSpaces || 0);
     
-    // Convert legacy paymentCycle to months if paymentCycleMonths is missing
     let months = tenant.paymentCycleMonths;
     if (!months) {
         if (tenant.paymentCycle === 'Monthly') months = 1;
         else if (tenant.paymentCycle === 'SemiAnnual') months = 6;
         else if (tenant.paymentCycle === 'Annual') months = 12;
-        else months = 3; // Default Quarterly
+        else months = 3;
     }
 
     setCurrentTenant({ 
@@ -216,7 +214,6 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
     setIsEditing(true);
   };
 
-  // New: Handle Renewal Click
   const handleRenewal = (tenant: Tenant) => {
       const oldEnd = new Date(tenant.leaseEnd);
       const newStart = new Date(oldEnd);
@@ -231,16 +228,17 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
       const contractP = tenant.contractParkingSpaces !== undefined ? tenant.contractParkingSpaces : (tenant.parkingSpaces || 0);
       const actualP = tenant.actualParkingSpaces !== undefined ? tenant.actualParkingSpaces : (tenant.parkingSpaces || 0);
 
-      // We'll create a NEW entry based on this one
+      let months = tenant.paymentCycleMonths || (tenant.paymentCycle === 'Monthly' ? 1 : tenant.paymentCycle === 'SemiAnnual' ? 6 : tenant.paymentCycle === 'Annual' ? 12 : 3);
+
       setCurrentTenant({
           ...tenant,
-          id: undefined, // Clear ID to create new
-          rootId: tenant.rootId || tenant.id, // Inherit or start linking
+          id: undefined, 
+          rootId: tenant.rootId || tenant.id, 
           leaseStart: newStartStr,
           leaseEnd: newEndStr,
-          status: ContractStatus.Pending, // Default to Pending for new renewal
-          rentFreePeriods: [], // Reset rent free
-          firstPaymentDate: newStartStr, 
+          status: ContractStatus.Pending, 
+          rentFreePeriods: [], 
+          firstPaymentDate: newStartStr, // Will be adjusted by preview logic if needed 
           contractParkingSpaces: contractP,
           actualParkingSpaces: actualP,
           isRisk: false,
@@ -251,10 +249,11 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
           contactName: tenant.contactName,
           contactBirthday: tenant.contactBirthday,
           industry: tenant.industry,
-          paymentCycleMonths: tenant.paymentCycleMonths || (tenant.paymentCycle === 'Monthly' ? 1 : tenant.paymentCycle === 'SemiAnnual' ? 6 : tenant.paymentCycle === 'Annual' ? 12 : 3)
+          paymentCycleMonths: months,
+          firstPaymentMonths: months
       });
       
-      setRenewingFromId(tenant.id); // Track we are renewing FROM this ID
+      setRenewingFromId(tenant.id);
       setFormErrors({});
       setIsEditing(true);
   };
@@ -331,7 +330,6 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
           monthlyRent: newMonthlyRent
       });
       
-      // Clear error if unit selected
       if (newIds.length > 0 && formErrors.unitIds) {
           setFormErrors(prev => ({...prev, unitIds: false}));
       }
@@ -347,7 +345,7 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
       });
   };
 
-  // Terminated Tenants in Current Year
+  // ... (Terminated Tenants, filteredTenants, tenantsByYear, checkDepositAlert, etc. kept same) ...
   const terminatedThisYear = useMemo(() => {
     return tenants.filter(t => {
         if (t.status !== ContractStatus.Terminated || !t.terminationDate) return false;
@@ -355,7 +353,6 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
     });
   }, [tenants, currentYear]);
 
-  // Group tenants by Signing Year
   const filteredTenants = useMemo(() => {
       return tenants.filter(t => {
         const matchesSearch = t.name?.toLowerCase().includes(searchTerm.toLowerCase());
@@ -378,7 +375,6 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
       }).sort((a,b) => new Date(b.leaseStart).getTime() - new Date(a.leaseStart).getTime());
   }, [tenants, searchTerm, filterBuilding, filterStatus]);
 
-  // Grouping Logic
   const tenantsByYear = useMemo(() => {
       const groups: Record<number, Tenant[]> = {};
       filteredTenants.forEach(t => {
@@ -416,7 +412,6 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
 
   const nextYear = new Date().getFullYear() + 1;
 
-  // --- ANALYSIS LOGIC ---
   const analysisData = useMemo(() => {
       const years = [currentYear - 2, currentYear - 1, currentYear];
       const result = {
@@ -435,15 +430,13 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
           let yearCount = tenantsInYear.length;
           let yearRevenue = 0;
 
-          // Process quarterly buckets for chart
           const quarterly = { 'Q1': 0, 'Q2': 0, 'Q3': 0, 'Q4': 0 };
 
           tenantsInYear.forEach(t => {
               yearArea += t.totalArea;
-              // Annualized revenue lost = monthly * 12
               yearRevenue += (t.monthlyRent * 12);
               
-              const month = new Date(t.terminationDate!).getMonth(); // 0-11
+              const month = new Date(t.terminationDate!).getMonth(); 
               if (month < 3) quarterly['Q1']++;
               else if (month < 6) quarterly['Q2']++;
               else if (month < 9) quarterly['Q3']++;
@@ -459,7 +452,6 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
 
           result.byYear[year] = { area: yearArea, count: yearCount, revenue: yearRevenue };
 
-          // Push to trend data: "2023 Q1", "2023 Q2"...
           Object.keys(quarterly).sort().forEach(q => {
               result.trend.push({
                   name: `${year} ${q}`,
@@ -473,13 +465,11 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
       return result;
   }, [tenants, currentYear]);
 
-  // Find linked history for currentTenant
   const historicalContracts = useMemo(() => {
       if (!currentTenant.rootId && !renewingFromId) return [];
       const root = currentTenant.rootId || (tenants.find(t => t.id === renewingFromId)?.rootId) || renewingFromId;
       if (!root) return [];
       
-      // Filter tenants with same rootId, exclude the one currently being edited (if it has an ID)
       return tenants
         .filter(t => (t.rootId === root || t.id === root) && t.id !== currentTenant.id)
         .sort((a,b) => new Date(b.leaseEnd).getTime() - new Date(a.leaseEnd).getTime());
@@ -492,6 +482,7 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
   if (isEditing) {
      return (
          <div className="bg-white p-4 md:p-8 rounded-xl shadow-2xl border border-slate-200 max-w-5xl mx-auto my-4 overflow-y-auto max-h-[95vh] animate-in zoom-in-50 duration-200">
+             {/* ... Header ... */}
              <div className="flex justify-between items-center mb-6 pb-4 border-b border-slate-100">
                 <div className="flex flex-col">
                     <h2 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
@@ -510,6 +501,7 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                         <FileText size={16}/> 核心租赁信息
                     </h3>
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                        {/* Name & Building & Units */}
                         <div className="col-span-1 md:col-span-2">
                             <label className={`block text-sm font-medium mb-1 ${formErrors.name ? 'text-red-600' : 'text-slate-700'}`}>企业名称 <span className="text-red-500">*</span></label>
                             <input type="text" className={getInputClass('name')} value={currentTenant.name || ''} onChange={e => { setCurrentTenant({...currentTenant, name: e.target.value}); if(formErrors.name) setFormErrors({...formErrors, name: false}); }} placeholder="请输入完整企业名称" />
@@ -549,6 +541,7 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                              )}
                         </div>
 
+                        {/* Dates & Rent */}
                         <div>
                             <label className={`block text-sm font-medium mb-1 ${formErrors.leaseStart ? 'text-red-600' : 'text-slate-700'}`}>起租日期 <span className="text-red-500">*</span></label>
                             <input type="date" className={getInputClass('leaseStart')} value={currentTenant.leaseStart || ''} onChange={e => { setCurrentTenant({...currentTenant, leaseStart: e.target.value}); if(formErrors.leaseStart) setFormErrors({...formErrors, leaseStart: false}); }} />
@@ -581,7 +574,6 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                                     value={currentTenant.paymentCycleMonths || ''} 
                                     onChange={e => {
                                         const val = Number(e.target.value);
-                                        // Auto update first payment months if it was default
                                         const updateFirst = !currentTenant.firstPaymentMonths || currentTenant.firstPaymentMonths === currentTenant.paymentCycleMonths;
                                         setCurrentTenant(prev => ({
                                             ...prev, 
@@ -599,7 +591,7 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                             
                             {currentTenant.leaseStart && currentTenant.paymentCycleMonths && (
                                 <div className="mt-2 bg-slate-50 rounded border border-slate-200 p-2 max-h-32 overflow-y-auto custom-scrollbar">
-                                    <div className="text-[10px] font-bold text-slate-600 mb-1 sticky top-0 bg-slate-50">首年付款计划预览:</div>
+                                    <div className="text-[10px] font-bold text-slate-600 mb-1 sticky top-0 bg-slate-50">首年付款计划预览 (提前1个月付款):</div>
                                     <div className="space-y-1.5">
                                         {paymentPreview.map((item, idx) => (
                                             <div key={idx} className="flex justify-between text-[10px] text-slate-600 border-b border-slate-100 last:border-0 pb-1">
@@ -836,6 +828,7 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
      )
   }
 
+  // ... (Main Return Render Logic remains same) ...
   return (
     <div className="space-y-6 relative">
       <div className="flex justify-between items-center mb-4">
@@ -1045,13 +1038,7 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                     </div>
                     <div>
                         <label className="block text-sm text-slate-600 mb-1">退租原因</label>
-                        <input type="text" placeholder="例如：公司搬迁、业务收缩..." className="w-full p-2 border rounded" id="termReasonInput" onChange={(e) => {
-                             // This is a temporary hack to pass reason to confirm since terminateData state doesn't have reason yet in this scope version
-                             // In a real refactor, I would add reason to terminateData state.
-                             // For now, I'll update the logic in confirmTermination to read from currentTenant update or pass a param.
-                             // Let's just assume simple flow.
-                             // Update: Adding reason to tenant update is handled in confirmTermination logic.
-                        }}/>
+                        <input type="text" placeholder="例如：公司搬迁、业务收缩..." className="w-full p-2 border rounded" id="termReasonInput" />
                         <p className="text-xs text-amber-600 mt-2 bg-amber-50 p-2 rounded">
                             {terminateData.type === 'Early' ? '注: 提前退租将更新合同结束日期，并停止计算后续日期的应收租金。' : '注: 正常退租流程，合同按原定计划结束。'}
                         </p>
@@ -1059,7 +1046,6 @@ export const ContractManager: React.FC<ContractManagerProps> = ({ tenants, build
                     <div className="flex justify-end gap-2 mt-6">
                         <button onClick={() => setShowTerminateModal(false)} className="px-4 py-2 text-slate-600 hover:bg-slate-100 rounded">取消</button>
                         <button onClick={() => {
-                            // Quick patch to capture reason input value
                             const reasonInput = (document.getElementById('termReasonInput') as HTMLInputElement)?.value;
                             if (terminateId) {
                                 const updatedTenants = tenants.map(t => {

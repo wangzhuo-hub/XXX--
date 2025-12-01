@@ -2,7 +2,7 @@
 
 
 import { GoogleGenAI } from "@google/genai";
-import { DashboardData, KeyMoment } from "../types";
+import { DashboardData, KeyMoment, BudgetAssumption, BudgetScenario, Building } from "../types";
 
 // Conditionally initialize Gemini Client
 let ai: GoogleGenAI | null = null;
@@ -12,6 +12,62 @@ if (process.env.API_KEY) {
   } catch (error) {
     console.warn("Failed to initialize Gemini AI client:", error);
     ai = null;
+  }
+}
+
+// 预算分析函数，用于BudgetManager组件
+export const analyzeBudget = async (data: {
+  assumptions: BudgetAssumption[];
+  scenarios: BudgetScenario[];
+  buildings: Building[];
+  userQuery?: string;
+}): Promise<string> => {
+  // Check if AI client is available
+  if (!ai) {
+    // Return mock data when AI service is not available
+    return "AI分析服务当前不可用。这是模拟的预算分析结果：当前预算方案总体合理，但建议关注成本控制和收入预测的准确性。根据市场趋势，建议考虑调整部分租金预期以保持竞争力。";
+  }
+
+  try {
+    const model = 'gemini-2.5-flash';
+    
+    const context = `
+      你现在是上海金蝶软件园的资深财务分析师。
+      你正在分析园区的预算数据。
+      以下是预算假设数据：
+      ${JSON.stringify(data.assumptions)}
+      
+      以下是预算方案数据：
+      ${JSON.stringify(data.scenarios)}
+      
+      以下是建筑数据：
+      ${JSON.stringify(data.buildings)}
+      
+      请根据这些数据回答问题。如果是通用分析，请重点关注：
+      1. 预算方案的合理性和可行性
+      2. 收入预测的准确性和潜在风险
+      3. 成本控制的优化建议
+      4. 不同方案之间的对比分析
+      5. 提高预算执行效率的策略
+      
+      保持回答专业、简练，使用中文。
+    `;
+
+    const prompt = data.userQuery || "请对当前预算方案进行全面分析，提供专业建议和风险提示。";
+
+    const response = await ai.models.generateContent({
+      model: model,
+      contents: [
+        { role: 'user', parts: [{ text: context }] },
+        { role: 'user', parts: [{ text: prompt }] }
+      ],
+    });
+
+    const result = await response.response;
+    return result.text();
+  } catch (error) {
+    console.error("Error analyzing budget:", error);
+    return "预算分析过程中发生错误，请稍后再试。";
   }
 }
 
@@ -141,27 +197,29 @@ export const searchTenantInsights = async (tenantName: string): Promise<TenantSe
   }
 
   try {
+
+  try {
     const model = 'gemini-2.5-flash';
     const prompt = `
       Search for key public events and details for the company "${tenantName}" on the web.
       I am specifically looking for:
-      1. Company founding date (to celebrate anniversaries). This is high priority.
+      1. Company founding date.
       2. The industry or sector the company belongs to (e.g., "Artificial Intelligence", "E-commerce", "Biotech").
       3. Major product launches or updates in the last 2 years.
-      4. Significant corporate news (funding, awards, strategic partnerships) in the last year.
+      4. Significant corporate news in the last year.
 
       Return the result as a raw JSON object. Do not wrap in markdown code blocks.
-      The JSON object must have this structure:
+      Structure:
       {
-        "foundingDate": "YYYY-MM-DD", // Or "YYYY-MM" if day is unknown. If not found, use null.
+        "foundingDate": "YYYY-MM-DD", 
         "industry": "String (Short industry name)",
         "moments": [
             {
-                "title": "Short headline",
+                "title": "Headline",
                 "date": "YYYY-MM-DD",
-                "description": "Brief summary",
+                "description": "Summary",
                 "type": "Anniversary" | "Product" | "News" | "Award" | "Other",
-                "sourceUrl": "URL found"
+                "sourceUrl": "URL"
             }
         ]
       }
